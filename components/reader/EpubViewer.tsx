@@ -11,8 +11,14 @@ import { useSettingsStore, fontFamilyStack } from "@/lib/store/useSettingsStore"
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { colorHex, cn } from "@/lib/utils";
 import { extractSelectionContext } from "@/lib/sentenceContext";
-import { selectWordAtPoint } from "@/lib/readerSelection";
-import type { Highlight, SelectionState } from "@/lib/types";
+import {
+  buildSelectionState,
+  setSelectionRange,
+  sameRange,
+  spanningRange,
+  wordRangeAtPoint,
+} from "@/lib/readerSelection";
+import type { Highlight, SelectionState, SelectionVariant } from "@/lib/types";
 
 export interface EpubViewerHandle {
   next: () => void;
@@ -74,6 +80,11 @@ interface SwipeState {
   lastX: number;
   velocity: number;
   navigating: boolean;
+  tapClientX: number;
+  tapClientY: number;
+  tapTarget: Element | null;
+  tapMoved: boolean;
+  tapLongPressed: boolean;
 }
 
 const SWIPE_DIR_LOCK = 8;
@@ -149,17 +160,28 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       lastX: 0,
       velocity: 0,
       navigating: false,
+      tapClientX: 0,
+      tapClientY: 0,
+      tapTarget: null,
+      tapMoved: false,
+      tapLongPressed: false,
     });
     const rafRef = useRef<number | null>(null);
     const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const mouseLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null
     );
-    const suppressClickUntilRef = useRef(0);
-    const mouseDownRef = useRef<{
+    const suppressSelectedUntilRef = useRef(0);
+    const pendingWordRef = useRef<{
+      range: Range;
+      contents: Contents;
+    } | null>(null);
+    const mouseTapRef = useRef<{
       x: number;
       y: number;
       target: Element | null;
+      moved: boolean;
+      longClicked: boolean;
     } | null>(null);
 
     function applySettings() {
@@ -176,12 +198,10 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       rendition.themes.override("font-family", fontFamilyStack(settings.fontFamily), true);
       rendition.themes.override("touch-action", "pan-y", true);
       rendition.themes.override("overscroll-behavior", "none", true);
-      // Suppress the native text-selection toolbar (e.g. Redmi/MIUI/Firefox)
-      // by disabling user selection; our own long-press gesture selects words.
-      rendition.themes.override("user-select", "none", true);
-      rendition.themes.override("-webkit-user-select", "none", true);
-      rendition.themes.override("-moz-user-select", "none", true);
-      rendition.themes.override("-webkit-touch-callout", "none", true);
+      // Keep native text selection enabled so users can drag-select words,
+      // phrases and sentences (with the browser's native highlight). Our
+      // long-press gesture sets a real selection, which fires epubjs's
+      // selectionchange-based "selected" event to show the popup.
       rendition.themes.override("-webkit-tap-highlight-color", "transparent", true);
     }
 
@@ -201,15 +221,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       let openTimeout: ReturnType<typeof setTimeout> | undefined;
       let rendition: Rendition | null = null;
       let book: Book | null = null;
-
-      const onContentTapped = () => {
-        if (Date.now() < suppressClickUntilRef.current) return;
-        const contents = renditionRef.current?.getContents?.();
-        const sel = contents?.window?.getSelection?.();
-        if (!sel || sel.isCollapsed) {
-          callbacksRef.current.onSelectionCleared?.();
-        }
-      };
 
       const clearLongPress = () => {
         if (longPressTimerRef.current != null) {
@@ -250,15 +261,16 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         const doc = target?.ownerDocument ?? null;
         const contents = findContentsForDoc(doc);
         if (!contents) return;
-        const state = selectWordAtPoint(contents, x, y);
-        if (!state) return;
+        // Set a real selection under the pointer; the popup is then shown by
+        // epubjs's "selected" event (which listens to selectionchange), so the
+        // native highlight, cfi, rect and context all come from one place.
+        if (!selectWordAtPoint(contents, x, y)) return;
         if (typeof navigator !== "undefined" && navigator.vibrate) {
           try {
             navigator.vibrate(12);
           } catch {}
         }
         suppressClickUntilRef.current = Date.now() + 500;
-        callbacksRef.current.onSelection?.(state);
       };
 
       const suppressContextMenuFor = (target: Element | null) => {

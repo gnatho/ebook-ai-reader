@@ -1,6 +1,6 @@
 import type { Contents } from "epubjs";
 import { extractSelectionContext } from "./sentenceContext";
-import type { SelectionState } from "./types";
+import type { SelectionState, SelectionVariant } from "./types";
 
 type CaretDocument = {
   createRange: () => Range;
@@ -57,37 +57,75 @@ function expandToWord(range: Range): Range {
   return r;
 }
 
-export function selectWordAtPoint(
+/** Resolve the whole word under (x, y) without modifying the selection. */
+export function wordRangeAtPoint(
   contents: Contents,
   x: number,
   y: number
-): SelectionState | null {
-  const doc = contents.document;
-  const win = contents.window;
-  const caret = caretRangeFromPoint(doc, x, y);
+): Range | null {
+  const caret = caretRangeFromPoint(contents.document, x, y);
   if (!caret) return null;
   const wordRange = expandToWord(caret);
   if (wordRange.collapsed) return null;
-  const text = wordRange.toString().trim();
-  if (!text) return null;
+  if (!wordRange.toString().trim()) return null;
+  return wordRange;
+}
 
-  let cfiRange: string;
-  try {
-    cfiRange = contents.cfiFromRange(wordRange);
-  } catch {
-    return null;
-  }
-
-  const context = extractSelectionContext(wordRange, win, text);
-  const r = wordRange.getBoundingClientRect();
+/** Build a SelectionState (cfi/text/rect/context) from a real DOM range. */
+export function buildSelectionState(
+  contents: Contents,
+  range: Range,
+  variant?: SelectionVariant
+): SelectionState {
+  const win = contents.window;
+  const text = range.toString().trim();
+  const context = extractSelectionContext(range, win, text);
+  const r = range.getBoundingClientRect();
   const frame = win.frameElement as HTMLElement | null;
   const fr = frame?.getBoundingClientRect();
   const left = (r.left ?? 0) + (fr?.left ?? 0);
   const top = (r.top ?? 0) + (fr?.top ?? 0);
+  let cfiRange = "";
+  try {
+    cfiRange = contents.cfiFromRange(range);
+  } catch {}
   return {
     cfiRange,
     text,
     rect: { left, top, width: r.width, height: r.height },
     context,
+    variant,
   };
+}
+
+/** Set a real browser selection so the native highlight shows. */
+export function setSelectionRange(contents: Contents, range: Range): void {
+  const sel = contents.window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+export function sameRange(a: Range, b: Range): boolean {
+  return (
+    a.startContainer === b.startContainer &&
+    a.startOffset === b.startOffset &&
+    a.endContainer === b.endContainer &&
+    a.endOffset === b.endOffset
+  );
+}
+
+/** Build a range covering both a and b (in document order). */
+export function spanningRange(a: Range, b: Range): Range {
+  try {
+    const ord = a.compareBoundaryPoints(Range.START_TO_START, b);
+    const first = ord <= 0 ? a : b;
+    const second = ord <= 0 ? b : a;
+    const r = a.cloneRange();
+    r.setStart(first.startContainer, first.startOffset);
+    r.setEnd(second.endContainer, second.endOffset);
+    return r;
+  } catch {
+    return a;
+  }
 }

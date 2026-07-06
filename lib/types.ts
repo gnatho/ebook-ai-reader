@@ -73,11 +73,14 @@ export interface SelectionContext {
   nextSentence?: string;
 }
 
+export type SelectionVariant = "full" | "range" | "instantTranslate";
+
 export interface SelectionState {
   cfiRange: string;
   text: string;
   rect: SelectionRect;
   context?: SelectionContext;
+  variant?: SelectionVariant;
 }
 
 export type LlmAction = "simplify" | "translate" | "define";
