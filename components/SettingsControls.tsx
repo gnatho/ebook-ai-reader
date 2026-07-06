@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Languages,
   Minus,
   Moon,
   Plus,
@@ -84,23 +83,6 @@ export function SettingsControls() {
         </div>
       </Section>
 
-      <Section icon={<Languages className="h-4 w-4" />} title="Target language">
-        <div className="grid grid-cols-2 gap-2">
-          <LangBtn
-            active={s.targetLanguage === "en-en"}
-            onClick={() => s.setTargetLanguage("en-en")}
-            title="English → English"
-            subtitle="Definition"
-          />
-          <LangBtn
-            active={s.targetLanguage === "en-zh"}
-            onClick={() => s.setTargetLanguage("en-zh")}
-            title="English → 中文"
-            subtitle="Translation"
-          />
-        </div>
-      </Section>
-
       <Section icon={<Sun className="h-4 w-4" />} title="Theme">
         <div className="grid grid-cols-2 gap-2">
           <button
@@ -170,32 +152,6 @@ function StepBtn({
       className="grid h-9 w-9 place-items-center rounded-lg border border-border text-foreground/80 transition-colors hover:bg-surface-2 disabled:opacity-40"
     >
       {children}
-    </button>
-  );
-}
-
-function LangBtn({
-  active,
-  onClick,
-  title,
-  subtitle,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  subtitle: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-xl border px-3 py-2.5 text-left transition-colors",
-        active ? "border-accent bg-accent/10" : "border-border hover:bg-surface-2"
-      )}
-    >
-      <div className="text-sm font-medium">{title}</div>
-      <div className="text-xs text-muted">{subtitle}</div>
     </button>
   );
 }

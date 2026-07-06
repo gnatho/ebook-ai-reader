@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Settings, Loader2, AlertCircle } from "lucide-react";
 import { TopBar, BackButton } from "@/components/TopBar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageToggle } from "@/components/LanguageToggle";
 import { EpubViewer, type EpubViewerHandle } from "./EpubViewer";
 import { SelectionMenu } from "./SelectionMenu";
 import { ReaderSettingsSheet } from "./ReaderSettingsSheet";
@@ -70,6 +71,7 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
         left={<BackButton onClick={onBack} />}
         right={
           <>
+            <LanguageToggle />
             <button
               type="button"
               aria-label="Reader settings"

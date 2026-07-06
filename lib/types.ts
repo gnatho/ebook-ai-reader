@@ -66,10 +66,18 @@ export interface SelectionRect {
   height: number;
 }
 
+export interface SelectionContext {
+  isWord: boolean;
+  currentSentence: string;
+  prevSentence?: string;
+  nextSentence?: string;
+}
+
 export interface SelectionState {
   cfiRange: string;
   text: string;
   rect: SelectionRect;
+  context?: SelectionContext;
 }
 
 export type LlmAction = "simplify" | "translate" | "define";
@@ -78,6 +86,9 @@ export interface LlmRequest {
   action: LlmAction;
   text: string;
   sentence?: string;
+  prevSentence?: string;
+  nextSentence?: string;
+  isWord?: boolean;
   targetLanguage: TargetLanguage;
 }
 

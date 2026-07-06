@@ -12,35 +12,59 @@ interface DeepSeekMessage {
   content: string;
 }
 
+const MAX_CONTEXT_SENTENCE = 400;
+
+function capSentence(s: string): string {
+  const t = s.trim();
+  return t.length > MAX_CONTEXT_SENTENCE
+    ? t.slice(0, MAX_CONTEXT_SENTENCE) + "…"
+    : t;
+}
+
+function buildContextBlock(req: LlmRequest): string {
+  const prev = req.prevSentence ? capSentence(req.prevSentence) : "";
+  const curr = req.sentence ? capSentence(req.sentence) : "";
+  const next = req.nextSentence ? capSentence(req.nextSentence) : "";
+  const lines: string[] = [];
+  if (prev) lines.push(`Previous sentence: ${prev}`);
+  if (curr) lines.push(`Current sentence: ${curr}`);
+  if (next) lines.push(`Next sentence: ${next}`);
+  if (lines.length === 0) return "";
+  return `\n\nContext:\n${lines.join("\n")}`;
+}
+
 function buildPrompt(req: LlmRequest): { system: string; user: string } {
   const term = req.text.trim();
   const sentence = (req.sentence ?? "").trim();
+  const context = buildContextBlock(req);
+  const isWord = req.isWord ?? !/\s/.test(term);
+  const typeLabel = isWord ? "single word" : "phrase";
 
   switch (req.action) {
     case "simplify":
       return {
         system:
-          "You are a reading assistant. Rewrite the given English sentence into plain, simple English that is easy to understand while preserving the original meaning. If the text is a single word or fragment, explain it simply instead.",
-        user: `Sentence: ${sentence || term}\n\nReturn JSON {"result": "<simplified sentence>", "example": ""}`,
+          "You are a reading assistant. Rewrite the given English sentence into plain, simple English that is easy to understand while preserving the original meaning. Use the surrounding context only to resolve references and pick the correct meaning; do not add information that is not in the text. If the text is a single word or fragment, explain it simply instead.",
+        user: `Sentence to simplify: ${sentence || term}${context}\n\nReturn JSON {"result": "<simplified sentence>", "example": ""}`,
       };
     case "define":
       return {
         system:
-          "You are a precise English dictionary. Given a single word, return its most common part(s) of speech and concise definitions, plus one short example sentence using the word in context.",
-        user: `Word: ${term}\n\nReturn JSON {"result": "<word> — (part of speech) definition; definition", "example": "<example sentence using the word>"}`,
+          "You are a precise English dictionary. Given a single word in context, return its most common part(s) of speech and concise definitions that fit how it is used in the provided context, plus one short example sentence using the word naturally.",
+        user: `Word: ${term}${context}\n\nReturn JSON {"result": "<word> — (part of speech) definition; definition", "example": "<example sentence using the word>"}`,
       };
     case "translate":
       if (req.targetLanguage === "en-zh") {
         return {
           system:
-            "You are an English-Chinese translator and language tutor. Translate the term into Chinese. Then give one short example sentence in English together with its Chinese translation.",
-          user: `Term: ${term}\n\nReturn JSON {"result": "<Chinese translation>", "example": "<English sentence> — <中文翻译>"}`,
+            "You are an English-Chinese translator and language tutor. Translate the selected word or phrase into Chinese, choosing the meaning that best fits the provided context. If the selected text is a single word, also state its part of speech as used in context. Then give one short example sentence in English together with its Chinese translation.",
+          user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<Chinese translation, with part of speech in parentheses if a single word>", "example": "<English sentence> — <中文翻译>"}`,
         };
       }
       return {
         system:
-          "You are an English-English language tutor. Give a concise definition of the term, then one short example sentence using it in context.",
-        user: `Term: ${term}\n\nReturn JSON {"result": "<concise definition>", "example": "<example sentence using the term>"}`,
+          "You are an English-English language tutor. Give a concise definition of the selected word or phrase that fits how it is used in the provided context, then one short example sentence using it naturally.",
+        user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<concise definition>", "example": "<example sentence using the term>"}`,
       };
     default: {
       const _exhaustive: never = req.action;

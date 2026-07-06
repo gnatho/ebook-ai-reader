@@ -35,6 +35,7 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
   const [panel, setPanel] = useState<Panel>({ kind: "idle" });
   const [showColors, setShowColors] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedText, setCopiedText] = useState(false);
   const targetLanguage = useSettingsStore((s) => s.targetLanguage);
   const addHighlight = useReaderStore((s) => s.addHighlight);
   const addQuote = useReaderStore((s) => s.addQuote);
@@ -61,10 +62,14 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
   async function runAction(action: LlmAction) {
     setPanel({ kind: "loading", action });
     try {
+      const ctx = selection.context;
       const res = await callLlm({
         action,
         text: selection.text,
-        sentence: selection.text,
+        sentence: ctx?.currentSentence,
+        prevSentence: ctx?.prevSentence,
+        nextSentence: ctx?.nextSentence,
+        isWord: ctx?.isWord,
         targetLanguage,
       });
       setPanel({ kind: "result", action, result: res.result, example: res.example });
@@ -107,6 +112,13 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
     navigator.clipboard?.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1200);
+    });
+  }
+
+  function copyText() {
+    navigator.clipboard?.writeText(selection.text).then(() => {
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 1200);
     });
   }
 
@@ -155,6 +167,13 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
             onClick={() => setShowColors((v) => !v)}
           >
             <Highlighter className="h-[18px] w-[18px]" />
+          </MenuButton>
+          <MenuButton label="Copy text" onClick={copyText}>
+            {copiedText ? (
+              <Check className="h-[18px] w-[18px]" />
+            ) : (
+              <Copy className="h-[18px] w-[18px]" />
+            )}
           </MenuButton>
           <MenuButton label="Save quote" onClick={doSaveQuote}>
             <Quote className="h-[18px] w-[18px]" />

@@ -10,6 +10,8 @@ import type { Book, Rendition, Contents } from "epubjs";
 import { useSettingsStore, fontFamilyStack } from "@/lib/store/useSettingsStore";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { colorHex, cn } from "@/lib/utils";
+import { extractSelectionContext } from "@/lib/sentenceContext";
+import { selectWordAtPoint } from "@/lib/readerSelection";
 import type { Highlight, SelectionState } from "@/lib/types";
 
 export interface EpubViewerHandle {
@@ -79,6 +81,9 @@ const SWIPE_TURN_RATIO = 0.3;
 const SWIPE_FLICK_V = 0.6;
 const SWIPE_ANIM_MS = 220;
 
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_TOLERANCE = 12;
+
 type EpubManagerLike = {
   container?: HTMLElement;
   layout?: { delta?: number };
@@ -146,6 +151,16 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       navigating: false,
     });
     const rafRef = useRef<number | null>(null);
+    const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const mouseLongPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+      null
+    );
+    const suppressClickUntilRef = useRef(0);
+    const mouseDownRef = useRef<{
+      x: number;
+      y: number;
+      target: Element | null;
+    } | null>(null);
 
     function applySettings() {
       const rendition = renditionRef.current;
@@ -161,6 +176,13 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       rendition.themes.override("font-family", fontFamilyStack(settings.fontFamily), true);
       rendition.themes.override("touch-action", "pan-y", true);
       rendition.themes.override("overscroll-behavior", "none", true);
+      // Suppress the native text-selection toolbar (e.g. Redmi/MIUI/Firefox)
+      // by disabling user selection; our own long-press gesture selects words.
+      rendition.themes.override("user-select", "none", true);
+      rendition.themes.override("-webkit-user-select", "none", true);
+      rendition.themes.override("-moz-user-select", "none", true);
+      rendition.themes.override("-webkit-touch-callout", "none", true);
+      rendition.themes.override("-webkit-tap-highlight-color", "transparent", true);
     }
 
     function selectTheme(theme: "dark" | "light") {
@@ -181,11 +203,69 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       let book: Book | null = null;
 
       const onContentTapped = () => {
+        if (Date.now() < suppressClickUntilRef.current) return;
         const contents = renditionRef.current?.getContents?.();
         const sel = contents?.window?.getSelection?.();
         if (!sel || sel.isCollapsed) {
           callbacksRef.current.onSelectionCleared?.();
         }
+      };
+
+      const clearLongPress = () => {
+        if (longPressTimerRef.current != null) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+      };
+
+      const clearMouseLongPress = () => {
+        if (mouseLongPressTimerRef.current != null) {
+          clearTimeout(mouseLongPressTimerRef.current);
+          mouseLongPressTimerRef.current = null;
+        }
+      };
+
+      const suppressedContextDocs = new Set<Document>();
+      const preventContextMenu = (e: Event) => {
+        e.preventDefault();
+      };
+
+      const findContentsForDoc = (doc: Document | null) => {
+        const rend = renditionRef.current;
+        const list =
+          (rend as unknown as { getContents?: () => Contents[] }).getContents?.() ??
+          [];
+        if (doc) {
+          const match = list.find((c) => c.document === doc);
+          if (match) return match;
+        }
+        return list[0] ?? null;
+      };
+
+      const triggerSelectionFromPoint = (
+        target: Element | null,
+        x: number,
+        y: number
+      ) => {
+        const doc = target?.ownerDocument ?? null;
+        const contents = findContentsForDoc(doc);
+        if (!contents) return;
+        const state = selectWordAtPoint(contents, x, y);
+        if (!state) return;
+        if (typeof navigator !== "undefined" && navigator.vibrate) {
+          try {
+            navigator.vibrate(12);
+          } catch {}
+        }
+        suppressClickUntilRef.current = Date.now() + 500;
+        callbacksRef.current.onSelection?.(state);
+      };
+
+      const suppressContextMenuFor = (target: Element | null) => {
+        const doc = target?.ownerDocument ?? null;
+        if (!doc || suppressedContextDocs.has(doc)) return;
+        doc.addEventListener("contextmenu", preventContextMenu, true);
+        suppressedContextDocs.add(doc);
       };
 
       const cancelSwipeAnim = () => {
@@ -228,6 +308,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         if (!rend || st.navigating) return;
         if (!te.touches || te.touches.length !== 1) {
           st.active = false;
+          clearLongPress();
           return;
         }
         const sc = getScroller(rend);
@@ -246,6 +327,20 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         st.lastTime = performance.now();
         st.lastX = st.startScreenX;
         st.velocity = 0;
+
+        const lpX = te.touches[0].clientX;
+        const lpY = te.touches[0].clientY;
+        const lpTarget = (te.target as Element | null) ?? null;
+        clearLongPress();
+        longPressTimerRef.current = setTimeout(() => {
+          longPressTimerRef.current = null;
+          const stt = swipeRef.current;
+          if (!stt.active || stt.decided) return;
+          triggerSelectionFromPoint(lpTarget, lpX, lpY);
+          stt.active = false;
+          stt.decided = true;
+          stt.horizontal = false;
+        }, LONG_PRESS_MS);
       };
 
       const onTouchMove = (e: Event) => {
@@ -256,6 +351,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           st.active = false;
           st.decided = false;
           st.horizontal = false;
+          clearLongPress();
           const rend = renditionRef.current;
           const sc = rend ? getScroller(rend) : null;
           if (sc) animateScrollTo(sc.container, st.startScrollLeft, SWIPE_ANIM_MS);
@@ -271,6 +367,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           const ddx = cx - st.startScreenX;
           const ddy = cy - st.startScreenY;
           if (ddx * ddx + ddy * ddy < SWIPE_DIR_LOCK * SWIPE_DIR_LOCK) return;
+          clearLongPress();
           st.decided = true;
           st.horizontal =
             Math.abs(ddx) >= Math.abs(ddy) && !selectionIsActive(rend);
@@ -291,6 +388,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
 
       const onTouchEnd = () => {
         const st = swipeRef.current;
+        clearLongPress();
         if (!st.active) return;
         st.active = false;
         if (!st.horizontal) return;
@@ -327,6 +425,46 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
               swipeRef.current.navigating = false;
             });
           }
+        }
+      };
+
+      const onMouseDown = (e: Event) => {
+        const me = e as MouseEvent;
+        const target = (me.target as Element | null) ?? null;
+        const x = me.clientX;
+        const y = me.clientY;
+        if (me.button === 2) {
+          suppressContextMenuFor(target);
+          triggerSelectionFromPoint(target, x, y);
+          return;
+        }
+        if (me.button !== 0) return;
+        clearMouseLongPress();
+        mouseDownRef.current = { x, y, target };
+        mouseLongPressTimerRef.current = setTimeout(() => {
+          mouseLongPressTimerRef.current = null;
+          const down = mouseDownRef.current;
+          mouseDownRef.current = null;
+          if (down) triggerSelectionFromPoint(down.target, down.x, down.y);
+        }, LONG_PRESS_MS);
+      };
+
+      const onMouseMove = (e: Event) => {
+        if (mouseLongPressTimerRef.current == null || !mouseDownRef.current) return;
+        const me = e as MouseEvent;
+        const dx = me.clientX - mouseDownRef.current.x;
+        const dy = me.clientY - mouseDownRef.current.y;
+        if (dx * dx + dy * dy > LONG_PRESS_TOLERANCE * LONG_PRESS_TOLERANCE) {
+          clearMouseLongPress();
+          mouseDownRef.current = null;
+        }
+      };
+
+      const onMouseUp = (e: Event) => {
+        const me = e as MouseEvent;
+        if (me.button === 0) {
+          clearMouseLongPress();
+          mouseDownRef.current = null;
         }
       };
 
@@ -431,6 +569,9 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
             const text = selection?.toString().trim() ?? "";
             if (!text) return;
             const range = contents.range(cfiRange);
+            const context = win
+              ? extractSelectionContext(range, win, text)
+              : undefined;
             const r = range.getBoundingClientRect();
             const frame = win.frameElement as HTMLElement | null;
             const fr = frame?.getBoundingClientRect();
@@ -440,6 +581,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
               cfiRange,
               text,
               rect: { left, top, width: r.width, height: r.height },
+              context,
             });
           } catch {
             callbacksRef.current.onSelection?.({
@@ -473,6 +615,9 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         rend.on("touchstart", onTouchStart);
         rend.on("touchmove", onTouchMove);
         rend.on("touchend", onTouchEnd);
+        rend.on("mousedown", onMouseDown);
+        rend.on("mousemove", onMouseMove);
+        rend.on("mouseup", onMouseUp);
 
         mount.addEventListener("click", onContentTapped, true);
       })();
@@ -480,11 +625,21 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       return () => {
         destroyed = true;
         if (openTimeout) clearTimeout(openTimeout);
+        clearLongPress();
+        clearMouseLongPress();
+        mouseDownRef.current = null;
+        suppressedContextDocs.forEach((doc) =>
+          doc.removeEventListener("contextmenu", preventContextMenu, true)
+        );
+        suppressedContextDocs.clear();
         mount.removeEventListener("click", onContentTapped, true);
         cancelSwipeAnim();
         try { rendition?.off("touchstart", onTouchStart); } catch {}
         try { rendition?.off("touchmove", onTouchMove); } catch {}
         try { rendition?.off("touchend", onTouchEnd); } catch {}
+        try { rendition?.off("mousedown", onMouseDown); } catch {}
+        try { rendition?.off("mousemove", onMouseMove); } catch {}
+        try { rendition?.off("mouseup", onMouseUp); } catch {}
         try {
           rendition?.destroy();
         } catch {}

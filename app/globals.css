@@ -73,6 +73,10 @@ button {
 .epub-view {
   width: 100%;
   height: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .epub-view iframe {
