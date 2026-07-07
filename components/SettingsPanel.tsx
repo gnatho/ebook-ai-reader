@@ -4,23 +4,23 @@ import { RotateCcw, Trash2 } from "lucide-react";
 import { SettingsControls } from "@/components/SettingsControls";
 import { useSettingsStore } from "@/lib/store/useSettingsStore";
 import { useReaderStore } from "@/lib/store/useReaderStore";
-import { deleteBookBytes } from "@/lib/idb";
 
 export function SettingsPanel() {
   const reset = useSettingsStore((s) => s.reset);
   const books = useReaderStore((s) => s.books);
-  const highlights = useReaderStore((s) => s.highlights);
+  const translations = useReaderStore((s) => s.translations);
   const quotes = useReaderStore((s) => s.quotes);
 
-  async function clearAllData() {
+  // Clears only this user's local reading data. Shared library books live on
+  // the server and are intentionally left untouched (they belong to everyone).
+  function clearLocalData() {
     if (
       !confirm(
-        "Remove all books, highlights, quotes, and settings from this device?"
+        "Clear your local reading data (progress, translations, quotes, settings) on this device?\n\nShared library books are not affected."
       )
     ) {
       return;
     }
-    await Promise.all(books.map((b) => deleteBookBytes(b.id)));
     localStorage.removeItem("ebook-reader:settings");
     localStorage.removeItem("ebook-reader:reader");
     window.location.reload();
@@ -47,19 +47,20 @@ export function SettingsPanel() {
       </div>
 
       <div className="mt-3 rounded-xl border border-border px-4 py-3">
-        <div className="mb-1 text-sm font-medium">Storage</div>
+        <div className="mb-1 text-sm font-medium">Library</div>
         <div className="text-xs text-muted">
-          {books.length} books · {highlights.length} highlights ·{" "}
-          {quotes.length} quotes saved on this device.
+          {books.length} books in the shared library ·{" "}
+          {translations.length} translations · {quotes.length} quotes saved on
+          this device.
         </div>
       </div>
 
       <button
         type="button"
-        onClick={clearAllData}
+        onClick={clearLocalData}
         className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-red-500/30 px-4 py-3 text-sm font-medium text-red-400 hover:bg-red-500/10"
       >
-        <Trash2 className="h-4 w-4" /> Clear all data
+        <Trash2 className="h-4 w-4" /> Clear my local data
       </button>
     </div>
   );

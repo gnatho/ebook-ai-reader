@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   Check,
   Copy,
-  Highlighter,
   Languages,
   Loader2,
   Quote,
@@ -15,9 +14,9 @@ import {
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { useSettingsStore } from "@/lib/store/useSettingsStore";
 import { callLlm } from "@/lib/llm";
-import { HIGHLIGHT_COLORS, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import type { EpubViewerHandle } from "./EpubViewer";
-import type { HighlightColor, LlmAction, SelectionState } from "@/lib/types";
+import type { LlmAction, SelectionContext, SelectionState } from "@/lib/types";
 
 interface SelectionMenuProps {
   selection: SelectionState;
@@ -31,14 +30,28 @@ type Panel =
   | { kind: "loading"; action: LlmAction }
   | { kind: "result"; action: LlmAction; result: string; example?: string; error?: string };
 
+function normalizeSource(text: string, context?: SelectionContext): string {
+  const trimmed = text.trim();
+  if (!trimmed) return text;
+  const sentence = context?.currentSentence;
+  if (!sentence) return trimmed;
+  const lead = sentence.replace(/^[^A-Za-z]+/, "");
+  if (!lead) return trimmed;
+  const leadLower = lead.toLowerCase();
+  const selLower = trimmed.toLowerCase();
+  if (!leadLower.startsWith(selLower)) return trimmed;
+  const next = leadLower[selLower.length];
+  if (next !== undefined && /[a-z]/.test(next)) return trimmed;
+  return trimmed.charAt(0).toLowerCase() + trimmed.slice(1);
+}
+
 export function SelectionMenu({ selection, bookId, viewerRef, onClose }: SelectionMenuProps) {
   const [panel, setPanel] = useState<Panel>({ kind: "idle" });
-  const [showColors, setShowColors] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
   const targetLanguage = useSettingsStore((s) => s.targetLanguage);
-  const addHighlight = useReaderStore((s) => s.addHighlight);
   const addQuote = useReaderStore((s) => s.addQuote);
+  const addTranslation = useReaderStore((s) => s.addTranslation);
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -73,6 +86,16 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
         targetLanguage,
       });
       setPanel({ kind: "result", action, result: res.result, example: res.example });
+      if (action === "translate") {
+        addTranslation({
+          bookId,
+          cfiRange: selection.cfiRange,
+          source: normalizeSource(selection.text, selection.context),
+          result: res.result,
+          example: res.example,
+          targetLanguage,
+        });
+      }
     } catch (err) {
       setPanel({
         kind: "result",
@@ -83,37 +106,7 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
     }
   }
 
-  function doHighlight(color: HighlightColor) {
-    const highlight = addHighlight({
-      bookId,
-      cfiRange: selection.cfiRange,
-      text: selection.text,
-      color,
-    });
-    viewerRef.current?.addHighlight(highlight);
-    viewerRef.current?.clearSelection();
-    setShowColors(false);
-    onClose();
-  }
-
   function doSaveQuote() {
-    addQuote({
-      bookId,
-      text: selection.text,
-      cfiRange: selection.cfiRange,
-    });
-    viewerRef.current?.clearSelection();
-    onClose();
-  }
-
-  function doQuote() {
-    const highlight = addHighlight({
-      bookId,
-      cfiRange: selection.cfiRange,
-      text: selection.text,
-      color: "yellow",
-    });
-    viewerRef.current?.addHighlight(highlight);
     addQuote({
       bookId,
       text: selection.text,
@@ -205,20 +198,13 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
               <Languages className="h-[18px] w-[18px]" />
             </MenuButton>
             {variant === "range" ? (
-              <MenuButton label="Quote" onClick={doQuote}>
+              <MenuButton label="Quote" onClick={doSaveQuote}>
                 <Quote className="h-[18px] w-[18px]" />
               </MenuButton>
             ) : (
               <>
                 <MenuButton label="Dictionary" onClick={() => runAction("define")}>
                   <Search className="h-[18px] w-[18px]" />
-                </MenuButton>
-                <MenuButton
-                  label="Highlight"
-                  active={showColors}
-                  onClick={() => setShowColors((v) => !v)}
-                >
-                  <Highlighter className="h-[18px] w-[18px]" />
                 </MenuButton>
                 <MenuButton label="Copy text" onClick={copyText}>
                   {copiedText ? (
@@ -243,24 +229,6 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
             >
               <X className="h-[18px] w-[18px]" />
             </button>
-          </div>
-        )}
-
-        {showColors && variant === "full" && (
-          <div className="flex items-center gap-2 border-t border-border px-3 py-2">
-            {HIGHLIGHT_COLORS.map((c) => (
-              <button
-                key={c.key}
-                type="button"
-                aria-label={`Highlight ${c.key}`}
-                onClick={() => doHighlight(c.key)}
-                className={cn(
-                  "h-6 w-6 rounded-full ring-2 ring-offset-2 ring-offset-surface transition-transform active:scale-90",
-                  c.ring
-                )}
-                style={{ backgroundColor: c.hex }}
-              />
-            ))}
           </div>
         )}
 

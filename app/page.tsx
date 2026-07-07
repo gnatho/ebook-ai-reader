@@ -6,39 +6,44 @@ import { TopBar } from "@/components/TopBar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { BottomNav, type Tab } from "@/components/BottomNav";
 import { Library } from "@/components/Library";
-import { HighlightsPanel } from "@/components/HighlightsPanel";
+import { TranslationsPanel } from "@/components/TranslationsPanel";
 import { QuotesPanel } from "@/components/QuotesPanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { ReaderScreen } from "@/components/reader/ReaderScreen";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { useHydrated } from "@/lib/hooks/useHydrated";
-import { ensureSampleBook } from "@/lib/sample";
+import { fetchLibrary } from "@/lib/library-api";
 
 export default function Home() {
   const hydrated = useHydrated();
   const [tab, setTab] = useState<Tab>("library");
   const [reading, setReading] = useState(false);
   const [focusCfi, setFocusCfi] = useState<string | undefined>(undefined);
-  const [bootstrapping, setBootstrapping] = useState(true);
+  const [loadingLibrary, setLoadingLibrary] = useState(true);
   const currentBookId = useReaderStore((s) => s.currentBookId);
   const setCurrentBook = useReaderStore((s) => s.setCurrentBook);
+  const setBooks = useReaderStore((s) => s.setBooks);
 
+  // Load the shared library from the server on first mount. The library is
+  // server-authoritative (shared across all users), so we never preload a
+  // sample book — it starts empty or with whatever has been uploaded.
   useEffect(() => {
-    if (!hydrated || !bootstrapping) return;
+    if (!hydrated) return;
     let cancelled = false;
     void (async () => {
-      const id = await ensureSampleBook();
-      if (cancelled) return;
-      if (id) {
-        setCurrentBook(id);
-        setReading(true);
+      try {
+        const books = await fetchLibrary();
+        if (!cancelled) setBooks(books);
+      } catch (e) {
+        console.error("Failed to load library:", e);
+      } finally {
+        if (!cancelled) setLoadingLibrary(false);
       }
-      setBootstrapping(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [hydrated, bootstrapping, setCurrentBook]);
+  }, [hydrated, setBooks]);
 
   function openBook(id: string, cfi?: string) {
     setCurrentBook(id);
@@ -64,7 +69,7 @@ export default function Home() {
 
   const titles: Record<Tab, string> = {
     library: "Booker",
-    highlights: "Highlights",
+    translations: "Translations",
     quotes: "Quotes",
     settings: "Settings",
   };
@@ -74,12 +79,12 @@ export default function Home() {
       <TopBar title={titles[tab]} right={<ThemeToggle />} />
 
       <main className="no-scrollbar flex-1 overflow-y-auto">
-        {!hydrated || bootstrapping ? (
+        {!hydrated || loadingLibrary ? (
           <Splash />
         ) : tab === "library" ? (
           <Library onOpen={openBook} />
-        ) : tab === "highlights" ? (
-          <HighlightsPanel onOpen={openBook} />
+        ) : tab === "translations" ? (
+          <TranslationsPanel onOpen={openBook} />
         ) : tab === "quotes" ? (
           <QuotesPanel onOpen={openBook} />
         ) : (

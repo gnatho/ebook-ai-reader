@@ -4,38 +4,40 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type {
   BookMeta,
-  Highlight,
-  HighlightColor,
   ReadingProgress,
   SavedQuote,
+  SavedTranslation,
 } from "@/lib/types";
 import { uid } from "@/lib/utils";
 
+/**
+ * Reader state.
+ *
+ * The shared `books` list is fetched from the server (GET /api/library) and
+ * held here for convenient app-wide access; it is NOT persisted, since it is
+ * the server's source of truth.
+ *
+ * Per-user reading state — current book, reading progress, translations and
+ * quotes — IS persisted to localStorage so each user keeps their own
+ * position and annotations across sessions, while sharing the same library.
+ */
 interface ReaderState {
   books: BookMeta[];
   currentBookId: string | null;
-  sampleBookId: string | null;
   progress: Record<string, ReadingProgress>;
-  highlights: Highlight[];
+  translations: SavedTranslation[];
   quotes: SavedQuote[];
 
-  bytes: Map<string, ArrayBuffer>;
-
-  addBook: (meta: BookMeta, bytes: ArrayBuffer) => void;
-  hasBytes: (id: string) => boolean;
-  getBytes: (id: string) => ArrayBuffer | undefined;
-  hydrateBytes: (id: string, bytes: ArrayBuffer) => void;
+  setBooks: (books: BookMeta[]) => void;
   removeBook: (id: string) => void;
   setCurrentBook: (id: string | null) => void;
-  setSampleBookId: (id: string | null) => void;
 
   saveProgress: (p: ReadingProgress) => void;
   getProgress: (bookId: string) => ReadingProgress | undefined;
 
-  addHighlight: (h: Omit<Highlight, "id" | "createdAt">) => Highlight;
-  updateHighlight: (id: string, patch: Partial<Highlight>) => void;
-  removeHighlight: (id: string) => void;
-  highlightsFor: (bookId: string) => Highlight[];
+  addTranslation: (t: Omit<SavedTranslation, "id" | "createdAt">) => SavedTranslation;
+  removeTranslation: (id: string) => void;
+  translationsFor: (bookId: string) => SavedTranslation[];
 
   addQuote: (q: Omit<SavedQuote, "id" | "createdAt">) => SavedQuote;
   removeQuote: (id: string) => void;
@@ -47,74 +49,38 @@ export const useReaderStore = create<ReaderState>()(
     (set, get) => ({
       books: [],
       currentBookId: null,
-      sampleBookId: null,
       progress: {},
-      highlights: [],
+      translations: [],
       quotes: [],
-      bytes: new Map(),
 
-      addBook: (meta, bytes) =>
-        set((s) => {
-          const exists = s.books.some((b) => b.id === meta.id);
-          const next = new Map(s.bytes);
-          next.set(meta.id, bytes);
-          return {
-            books: exists ? s.books : [meta, ...s.books],
-            bytes: next,
-            currentBookId: meta.id,
-          };
-        }),
-      hasBytes: (id) => get().bytes.has(id),
-      getBytes: (id) => get().bytes.get(id),
-      hydrateBytes: (id, bytes) =>
-        set((s) => {
-          const next = new Map(s.bytes);
-          next.set(id, bytes);
-          return { bytes: next };
-        }),
+      setBooks: (books) => set({ books }),
+      // Optimistic local removal used after a successful server delete.
       removeBook: (id) =>
         set((s) => ({
           books: s.books.filter((b) => b.id !== id),
-          highlights: s.highlights.filter((h) => h.bookId !== id),
-          quotes: s.quotes.filter((q) => q.bookId !== id),
-          progress: Object.fromEntries(
-            Object.entries(s.progress).filter(([k]) => k !== id)
-          ),
           currentBookId: s.currentBookId === id ? null : s.currentBookId,
-          bytes: (() => {
-            const next = new Map(s.bytes);
-            next.delete(id);
-            return next;
-          })(),
         })),
       setCurrentBook: (id) => set({ currentBookId: id }),
-      setSampleBookId: (id) => set({ sampleBookId: id }),
 
       saveProgress: (p) =>
         set((s) => ({ progress: { ...s.progress, [p.bookId]: p } })),
       getProgress: (bookId) => get().progress[bookId],
 
-      addHighlight: (h) => {
-        const highlight: Highlight = {
-          ...h,
+      addTranslation: (t) => {
+        const translation: SavedTranslation = {
+          ...t,
           id: uid(),
           createdAt: Date.now(),
         };
-        set((s) => ({ highlights: [highlight, ...s.highlights] }));
-        return highlight;
+        set((s) => ({ translations: [translation, ...s.translations] }));
+        return translation;
       },
-      updateHighlight: (id, patch) =>
+      removeTranslation: (id) =>
         set((s) => ({
-          highlights: s.highlights.map((h) =>
-            h.id === id ? { ...h, ...patch } : h
-          ),
+          translations: s.translations.filter((t) => t.id !== id),
         })),
-      removeHighlight: (id) =>
-        set((s) => ({
-          highlights: s.highlights.filter((h) => h.id !== id),
-        })),
-      highlightsFor: (bookId) =>
-        get().highlights.filter((h) => h.bookId === bookId),
+      translationsFor: (bookId) =>
+        get().translations.filter((t) => t.bookId === bookId),
 
       addQuote: (q) => {
         const quote: SavedQuote = {
@@ -132,17 +98,26 @@ export const useReaderStore = create<ReaderState>()(
     {
       name: "ebook-reader:reader",
       storage: createJSONStorage(() => localStorage),
-      version: 1,
+      version: 3,
+      // Only persist per-user reading state — the shared book list is fetched.
       partialize: (s) => ({
-        books: s.books,
         currentBookId: s.currentBookId,
-        sampleBookId: s.sampleBookId,
         progress: s.progress,
-        highlights: s.highlights,
+        translations: s.translations,
         quotes: s.quotes,
       }),
+      // Rebuild persisted state for any prior version: drop the legacy
+      // `highlights` collection (replaced by `translations`) and drop the
+      // server-authoritative `books`/`sampleBookId` fields from v1.
+      migrate: (persisted) => {
+        const p = (persisted ?? {}) as Partial<ReaderState>;
+        return {
+          currentBookId: p.currentBookId ?? null,
+          progress: p.progress ?? {},
+          translations: p.translations ?? [],
+          quotes: p.quotes ?? [],
+        };
+      },
     }
   )
 );
-
-export type { HighlightColor };

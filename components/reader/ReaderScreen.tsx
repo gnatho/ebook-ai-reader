@@ -9,7 +9,7 @@ import { EpubViewer, type EpubViewerHandle } from "./EpubViewer";
 import { SelectionMenu } from "./SelectionMenu";
 import { ReaderSettingsSheet } from "./ReaderSettingsSheet";
 import { useReaderStore } from "@/lib/store/useReaderStore";
-import { getBookBytes } from "@/lib/idb";
+import { bookFileUrl } from "@/lib/library-api";
 import type { SelectionState } from "@/lib/types";
 
 interface ReaderScreenProps {
@@ -20,8 +20,6 @@ interface ReaderScreenProps {
 
 export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
   const book = useReaderStore((s) => s.books.find((b) => b.id === bookId));
-  const getBytes = useReaderStore((s) => s.getBytes);
-  const hydrateBytes = useReaderStore((s) => s.hydrateBytes);
   const saveProgress = useReaderStore((s) => s.saveProgress);
   const getProgress = useReaderStore((s) => s.getProgress);
 
@@ -40,19 +38,20 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
       setLoading(true);
       setError(null);
       try {
-        let buf = getBytes(bookId);
-        if (!buf) {
-          buf = (await getBookBytes(bookId)) ?? undefined;
-          if (buf) hydrateBytes(bookId, buf);
+        // Fetch the EPUB bytes from the shared library on the server.
+        const res = await fetch(bookFileUrl(bookId));
+        if (!res.ok) {
+          throw new Error("not-found");
         }
+        const buf = await res.arrayBuffer();
         if (cancelled) return;
-        if (!buf) {
-          setError("Book file not found. Try re-importing it from your library.");
-        } else {
-          setBytes(buf);
+        setBytes(buf);
+      } catch {
+        if (!cancelled) {
+          setError(
+            "Could not load this book. It may have been removed from the shared library."
+          );
         }
-      } catch (e) {
-        if (!cancelled) setError(String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -61,7 +60,7 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
     return () => {
       cancelled = true;
     };
-  }, [bookId, getBytes, hydrateBytes]);
+  }, [bookId]);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-background">

@@ -9,7 +9,7 @@ import {
 import type { Book, Rendition, Contents } from "epubjs";
 import { useSettingsStore, fontFamilyStack } from "@/lib/store/useSettingsStore";
 import { useReaderStore } from "@/lib/store/useReaderStore";
-import { colorHex, cn } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import { extractSelectionContext } from "@/lib/sentenceContext";
 import {
   buildSelectionState,
@@ -18,14 +18,12 @@ import {
   spanningRange,
   wordRangeAtPoint,
 } from "@/lib/readerSelection";
-import type { Highlight, SelectionState, SelectionVariant } from "@/lib/types";
+import type { SelectionState, SelectionVariant } from "@/lib/types";
 
 export interface EpubViewerHandle {
   next: () => void;
   prev: () => void;
   display: (target: string) => Promise<void>;
-  addHighlight: (h: Highlight) => void;
-  removeHighlight: (cfiRange: string) => void;
   clearSelection: () => void;
 }
 
@@ -43,14 +41,6 @@ interface EpubViewerProps {
   onSelection?: (sel: SelectionState) => void;
   onSelectionCleared?: () => void;
   onError?: (msg: string) => void;
-}
-
-function hexToRgba(hex: string, alpha: number): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16);
-  const g = parseInt(h.slice(2, 4), 16);
-  const b = parseInt(h.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 const DARK_THEME = {
@@ -701,19 +691,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
 
         rend.on("relocated", onRelocated);
         rend.on("selected", onSelected);
-        rend.on("rendered", () => {
-          const existing = useReaderStore.getState().highlightsFor(bookId);
-          for (const h of existing) {
-            rend.annotations.highlight(
-              h.cfiRange,
-              { id: h.id, color: h.color },
-              undefined,
-              "epub-highlight",
-              { "background-color": hexToRgba(colorHex(h.color), 0.4) }
-            );
-          }
-        });
-
         rend.on("touchstart", onTouchStart);
         rend.on("touchmove", onTouchMove);
         rend.on("touchend", onTouchEnd);
@@ -780,18 +757,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           await whenStarted((r) => {
             void r.display(target);
           });
-        },
-        addHighlight: (h: Highlight) => {
-          renditionRef.current?.annotations.highlight(
-            h.cfiRange,
-            { id: h.id, color: h.color },
-            undefined,
-            "epub-highlight",
-            { "background-color": hexToRgba(colorHex(h.color), 0.4) }
-          );
-        },
-        removeHighlight: (cfiRange: string) => {
-          renditionRef.current?.annotations.remove(cfiRange, "highlight");
         },
         clearSelection: () => {
           const rendition = renditionRef.current;

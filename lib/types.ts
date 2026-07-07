@@ -39,23 +39,22 @@ export interface ReadingProgress {
   updatedAt: number;
 }
 
-export type HighlightColor = "yellow" | "green" | "blue" | "pink" | "purple";
-
-export interface Highlight {
-  id: string;
-  bookId: string;
-  cfiRange: string;
-  text: string;
-  color: HighlightColor;
-  note?: string;
-  createdAt: number;
-}
-
 export interface SavedQuote {
   id: string;
   bookId: string;
   text: string;
   cfiRange: string;
+  createdAt: number;
+}
+
+export interface SavedTranslation {
+  id: string;
+  bookId: string;
+  cfiRange: string;
+  source: string;
+  result: string;
+  example?: string;
+  targetLanguage: TargetLanguage;
   createdAt: number;
 }
 

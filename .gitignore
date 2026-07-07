@@ -37,6 +37,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# Shared EPUB library (runtime user uploads + manifest)
+/library/epubs/*
+!/library/epubs/.gitkeep
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

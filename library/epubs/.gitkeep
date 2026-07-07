@@ -1,0 +1,3 @@
+# This folder is the central shared EPUB library.
+# EPUB uploads and the runtime manifest are written here by the server
+# (see lib/server/library.ts) and are intentionally git-ignored.

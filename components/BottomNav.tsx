@@ -1,14 +1,14 @@
 "use client";
 
 import {
-  Highlighter,
+  Languages,
   Library,
   Quote,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export type Tab = "library" | "highlights" | "quotes" | "settings";
+export type Tab = "library" | "translations" | "quotes" | "settings";
 
 interface NavItem {
   key: Tab;
@@ -18,7 +18,7 @@ interface NavItem {
 
 const ITEMS: NavItem[] = [
   { key: "library", label: "Library", Icon: Library },
-  { key: "highlights", label: "Marks", Icon: Highlighter },
+  { key: "translations", label: "Translations", Icon: Languages },
   { key: "quotes", label: "Quotes", Icon: Quote },
   { key: "settings", label: "Settings", Icon: Settings },
 ];
