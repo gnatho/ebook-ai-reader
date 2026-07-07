@@ -37,9 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
-# Shared EPUB library (runtime user uploads + manifest)
-#/library/epubs/*
-#!/library/epubs/.gitkeep
+# Shared EPUB library — the seeded books are committed to the repo so
+# deployments (e.g. Vercel) can serve them. Runtime uploads create additional
+# untracked files you can choose to commit or ignore.
 
 # typescript
 *.tsbuildinfo

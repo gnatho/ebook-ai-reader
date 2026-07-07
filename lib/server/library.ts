@@ -100,7 +100,11 @@ export async function listBooks(): Promise<BookMeta[]> {
     // Detect removed files.
     if (Object.keys(manifest.books).some((f) => !next[f])) changed = true;
 
-    if (changed) await writeManifest({ version: 1, books: next });
+    if (changed) {
+      // Best-effort: read-only deployments (e.g. Vercel serverless) can't
+      // persist the manifest, but the in-memory result below is still valid.
+      await writeManifest({ version: 1, books: next }).catch(() => {});
+    }
 
     return Object.values(next)
       .map(toBookMeta)
