@@ -123,14 +123,6 @@ function eachContents(rendition: Rendition): Array<{
     : [];
 }
 
-function selectionIsActive(rendition: Rendition): boolean {
-  for (const c of eachContents(rendition)) {
-    const sel = c?.window?.getSelection?.();
-    if (sel && !sel.isCollapsed) return true;
-  }
-  return false;
-}
-
 function clearSelectionInIframe(rendition: Rendition): void {
   for (const c of eachContents(rendition)) {
     const sel = c?.window?.getSelection?.();
@@ -253,24 +245,93 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         return list[0] ?? null;
       };
 
-      const triggerSelectionFromPoint = (
+      const resolveWordAt = (
         target: Element | null,
         x: number,
         y: number
+      ): { range: Range; contents: Contents } | null => {
+        const contents = findContentsForDoc(target?.ownerDocument ?? null);
+        if (!contents) return null;
+        const range = wordRangeAtPoint(contents, x, y);
+        if (!range) return null;
+        return { range, contents };
+      };
+
+      // Suppress epubjs's "selected" event for a short window whenever *we*
+      // set a selection programmatically (taps / long-press), so it doesn't
+      // double-trigger a menu. Genuine drag-selections (no recent programmatic
+      // set) still drive the "full" menu via onSelected.
+      const markProgrammaticSelection = () => {
+        suppressSelectedUntilRef.current = Date.now() + 600;
+      };
+
+      const clearTapSelection = () => {
+        pendingWordRef.current = null;
+        const rend = renditionRef.current;
+        if (rend) clearSelectionInIframe(rend);
+        callbacksRef.current.onSelectionCleared?.();
+      };
+
+      const showMenu = (
+        contents: Contents,
+        range: Range,
+        variant: SelectionVariant
       ) => {
-        const doc = target?.ownerDocument ?? null;
-        const contents = findContentsForDoc(doc);
-        if (!contents) return;
-        // Set a real selection under the pointer; the popup is then shown by
-        // epubjs's "selected" event (which listens to selectionchange), so the
-        // native highlight, cfi, rect and context all come from one place.
-        if (!selectWordAtPoint(contents, x, y)) return;
+        setSelectionRange(contents, range);
+        markProgrammaticSelection();
+        pendingWordRef.current = null;
+        callbacksRef.current.onSelection?.(
+          buildSelectionState(contents, range, variant)
+        );
+      };
+
+      const handleTap = (
+        resolved: { range: Range; contents: Contents } | null
+      ) => {
+        if (!resolved) {
+          clearTapSelection();
+          return;
+        }
+        const pending = pendingWordRef.current;
+        if (!pending) {
+          // First tap: visually select the word and remember it (no menu).
+          setSelectionRange(resolved.contents, resolved.range);
+          markProgrammaticSelection();
+          pendingWordRef.current = {
+            range: resolved.range,
+            contents: resolved.contents,
+          };
+          return;
+        }
+        const sameDoc =
+          pending.contents.document === resolved.contents.document;
+        if (sameDoc && sameRange(pending.range, resolved.range)) {
+          // Second tap on the same word -> instant translate, no menu.
+          showMenu(resolved.contents, resolved.range, "instantTranslate");
+        } else if (sameDoc) {
+          // Two different words -> select the whole range and show the menu.
+          showMenu(resolved.contents, spanningRange(pending.range, resolved.range), "range");
+        } else {
+          // Cross-page tap -> treat as a fresh first tap.
+          setSelectionRange(resolved.contents, resolved.range);
+          markProgrammaticSelection();
+          pendingWordRef.current = {
+            range: resolved.range,
+            contents: resolved.contents,
+          };
+        }
+      };
+
+      const handleLongPress = (
+        resolved: { range: Range; contents: Contents } | null
+      ) => {
+        if (!resolved) return;
+        showMenu(resolved.contents, resolved.range, "full");
         if (typeof navigator !== "undefined" && navigator.vibrate) {
           try {
             navigator.vibrate(12);
           } catch {}
         }
-        suppressClickUntilRef.current = Date.now() + 500;
       };
 
       const suppressContextMenuFor = (target: Element | null) => {
@@ -325,10 +386,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         }
         const sc = getScroller(rend);
         if (!sc) return;
-        if (selectionIsActive(rend)) {
-          clearSelectionInIframe(rend);
-          callbacksRef.current.onSelectionCleared?.();
-        }
         cancelSwipeAnim();
         st.active = true;
         st.decided = false;
@@ -339,19 +396,23 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         st.lastTime = performance.now();
         st.lastX = st.startScreenX;
         st.velocity = 0;
+        // Remember where the finger landed so we can resolve a word on tap.
+        st.tapClientX = te.touches[0].clientX;
+        st.tapClientY = te.touches[0].clientY;
+        st.tapTarget = (te.target as Element | null) ?? null;
+        st.tapMoved = false;
+        st.tapLongPressed = false;
 
-        const lpX = te.touches[0].clientX;
-        const lpY = te.touches[0].clientY;
-        const lpTarget = (te.target as Element | null) ?? null;
         clearLongPress();
         longPressTimerRef.current = setTimeout(() => {
           longPressTimerRef.current = null;
           const stt = swipeRef.current;
           if (!stt.active || stt.decided) return;
-          triggerSelectionFromPoint(lpTarget, lpX, lpY);
+          stt.tapLongPressed = true;
           stt.active = false;
           stt.decided = true;
           stt.horizontal = false;
+          handleLongPress(resolveWordAt(stt.tapTarget, stt.tapClientX, stt.tapClientY));
         }, LONG_PRESS_MS);
       };
 
@@ -379,10 +440,13 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           const ddx = cx - st.startScreenX;
           const ddy = cy - st.startScreenY;
           if (ddx * ddx + ddy * ddy < SWIPE_DIR_LOCK * SWIPE_DIR_LOCK) return;
+          // Significant movement -> not a tap; abandon any pending word so a
+          // swipe can proceed cleanly.
           clearLongPress();
+          st.tapMoved = true;
+          if (pendingWordRef.current) clearTapSelection();
           st.decided = true;
-          st.horizontal =
-            Math.abs(ddx) >= Math.abs(ddy) && !selectionIsActive(rend);
+          st.horizontal = Math.abs(ddx) >= Math.abs(ddy);
           if (!st.horizontal) {
             st.active = false;
             return;
@@ -401,7 +465,21 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       const onTouchEnd = () => {
         const st = swipeRef.current;
         clearLongPress();
-        if (!st.active) return;
+
+        if (st.tapLongPressed) {
+          st.active = false;
+          return; // long-press already handled selection
+        }
+
+        // A tap is a quick touch with no significant movement.
+        if (!st.tapMoved) {
+          st.active = false;
+          handleTap(resolveWordAt(st.tapTarget, st.tapClientX, st.tapClientY));
+          return;
+        }
+
+        // Otherwise it was a movement: commit a horizontal swipe, or ignore a
+        // vertical drag (native scroll / selection handles).
         st.active = false;
         if (!st.horizontal) return;
         const rend = renditionRef.current;
@@ -447,37 +525,42 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         const y = me.clientY;
         if (me.button === 2) {
           suppressContextMenuFor(target);
-          triggerSelectionFromPoint(target, x, y);
+          handleLongPress(resolveWordAt(target, x, y));
           return;
         }
         if (me.button !== 0) return;
         clearMouseLongPress();
-        mouseDownRef.current = { x, y, target };
+        mouseTapRef.current = { x, y, target, moved: false, longClicked: false };
         mouseLongPressTimerRef.current = setTimeout(() => {
           mouseLongPressTimerRef.current = null;
-          const down = mouseDownRef.current;
-          mouseDownRef.current = null;
-          if (down) triggerSelectionFromPoint(down.target, down.x, down.y);
+          const mt = mouseTapRef.current;
+          if (!mt || mt.moved) return;
+          mt.longClicked = true;
+          handleLongPress(resolveWordAt(mt.target, mt.x, mt.y));
         }, LONG_PRESS_MS);
       };
 
       const onMouseMove = (e: Event) => {
-        if (mouseLongPressTimerRef.current == null || !mouseDownRef.current) return;
+        const mt = mouseTapRef.current;
+        if (!mt) return;
         const me = e as MouseEvent;
-        const dx = me.clientX - mouseDownRef.current.x;
-        const dy = me.clientY - mouseDownRef.current.y;
+        const dx = me.clientX - mt.x;
+        const dy = me.clientY - mt.y;
         if (dx * dx + dy * dy > LONG_PRESS_TOLERANCE * LONG_PRESS_TOLERANCE) {
+          mt.moved = true;
           clearMouseLongPress();
-          mouseDownRef.current = null;
         }
       };
 
       const onMouseUp = (e: Event) => {
         const me = e as MouseEvent;
-        if (me.button === 0) {
-          clearMouseLongPress();
-          mouseDownRef.current = null;
-        }
+        if (me.button !== 0) return;
+        clearMouseLongPress();
+        const mt = mouseTapRef.current;
+        mouseTapRef.current = null;
+        if (!mt || mt.longClicked) return; // long-click handled
+        if (mt.moved) return; // drag-select: let native selection + onSelected handle
+        handleTap(resolveWordAt(mt.target, mt.x, mt.y));
       };
 
       void (async () => {
@@ -575,6 +658,11 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         };
 
         const onSelected = (cfiRange: string, contents: Contents) => {
+          // Ignore selections we set ourselves (taps/long-press); those are
+          // surfaced directly via onSelection. This handler only fires for
+          // genuine drag-selections (e.g. desktop mouse drag), showing the
+          // full menu.
+          if (Date.now() < suppressSelectedUntilRef.current) return;
           try {
             const win = contents.window;
             const selection = win?.getSelection?.();
@@ -594,6 +682,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
               text,
               rect: { left, top, width: r.width, height: r.height },
               context,
+              variant: "full",
             });
           } catch {
             callbacksRef.current.onSelection?.({
@@ -605,6 +694,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
                 width: 0,
                 height: 0,
               },
+              variant: "full",
             });
           }
         };
@@ -630,8 +720,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         rend.on("mousedown", onMouseDown);
         rend.on("mousemove", onMouseMove);
         rend.on("mouseup", onMouseUp);
-
-        mount.addEventListener("click", onContentTapped, true);
       })();
 
       return () => {
@@ -639,12 +727,12 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         if (openTimeout) clearTimeout(openTimeout);
         clearLongPress();
         clearMouseLongPress();
-        mouseDownRef.current = null;
+        mouseTapRef.current = null;
+        pendingWordRef.current = null;
         suppressedContextDocs.forEach((doc) =>
           doc.removeEventListener("contextmenu", preventContextMenu, true)
         );
         suppressedContextDocs.clear();
-        mount.removeEventListener("click", onContentTapped, true);
         cancelSwipeAnim();
         try { rendition?.off("touchstart", onTouchStart); } catch {}
         try { rendition?.off("touchmove", onTouchMove); } catch {}

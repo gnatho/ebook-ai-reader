@@ -106,6 +106,23 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
     onClose();
   }
 
+  function doQuote() {
+    const highlight = addHighlight({
+      bookId,
+      cfiRange: selection.cfiRange,
+      text: selection.text,
+      color: "yellow",
+    });
+    viewerRef.current?.addHighlight(highlight);
+    addQuote({
+      bookId,
+      text: selection.text,
+      cfiRange: selection.cfiRange,
+    });
+    viewerRef.current?.clearSelection();
+    onClose();
+  }
+
   function copyResult() {
     if (panel.kind !== "result") return;
     const text = [panel.result, panel.example].filter(Boolean).join("\n\n");
@@ -121,6 +138,17 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
       setTimeout(() => setCopiedText(false), 1200);
     });
   }
+
+  const variant = selection.variant ?? "full";
+
+  // Double-tap on a single word: auto-run the translation immediately, no menu.
+  const autoRanRef = useRef(false);
+  useEffect(() => {
+    if (variant !== "instantTranslate" || autoRanRef.current) return;
+    autoRanRef.current = true;
+    void runAction("translate");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant]);
 
   const { rect } = selection;
   const vw = typeof window !== "undefined" ? window.innerWidth : 375;
@@ -148,50 +176,77 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
       style={{ left, width: cardWidth, ...verticalStyle }}
     >
       <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/30">
-        <div className="flex items-center gap-1 px-2 py-1.5">
-          <MenuButton label="Simplify" onClick={() => runAction("simplify")}>
-            <Wand2 className="h-[18px] w-[18px]" />
-          </MenuButton>
-          <MenuButton
-            label={actionLabel.translate}
-            onClick={() => runAction("translate")}
-          >
-            <Languages className="h-[18px] w-[18px]" />
-          </MenuButton>
-          <MenuButton label="Dictionary" onClick={() => runAction("define")}>
-            <Search className="h-[18px] w-[18px]" />
-          </MenuButton>
-          <MenuButton
-            label="Highlight"
-            active={showColors}
-            onClick={() => setShowColors((v) => !v)}
-          >
-            <Highlighter className="h-[18px] w-[18px]" />
-          </MenuButton>
-          <MenuButton label="Copy text" onClick={copyText}>
-            {copiedText ? (
-              <Check className="h-[18px] w-[18px]" />
+        {variant === "instantTranslate" ? (
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="px-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              {actionLabel.translate}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                viewerRef.current?.clearSelection();
+                onClose();
+              }}
+              aria-label="Close"
+              className="grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2"
+            >
+              <X className="h-[18px] w-[18px]" />
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1 px-2 py-1.5">
+            <MenuButton label="Simplify" onClick={() => runAction("simplify")}>
+              <Wand2 className="h-[18px] w-[18px]" />
+            </MenuButton>
+            <MenuButton
+              label={actionLabel.translate}
+              onClick={() => runAction("translate")}
+            >
+              <Languages className="h-[18px] w-[18px]" />
+            </MenuButton>
+            {variant === "range" ? (
+              <MenuButton label="Quote" onClick={doQuote}>
+                <Quote className="h-[18px] w-[18px]" />
+              </MenuButton>
             ) : (
-              <Copy className="h-[18px] w-[18px]" />
+              <>
+                <MenuButton label="Dictionary" onClick={() => runAction("define")}>
+                  <Search className="h-[18px] w-[18px]" />
+                </MenuButton>
+                <MenuButton
+                  label="Highlight"
+                  active={showColors}
+                  onClick={() => setShowColors((v) => !v)}
+                >
+                  <Highlighter className="h-[18px] w-[18px]" />
+                </MenuButton>
+                <MenuButton label="Copy text" onClick={copyText}>
+                  {copiedText ? (
+                    <Check className="h-[18px] w-[18px]" />
+                  ) : (
+                    <Copy className="h-[18px] w-[18px]" />
+                  )}
+                </MenuButton>
+                <MenuButton label="Save quote" onClick={doSaveQuote}>
+                  <Quote className="h-[18px] w-[18px]" />
+                </MenuButton>
+              </>
             )}
-          </MenuButton>
-          <MenuButton label="Save quote" onClick={doSaveQuote}>
-            <Quote className="h-[18px] w-[18px]" />
-          </MenuButton>
-          <button
-            type="button"
-            onClick={() => {
-              viewerRef.current?.clearSelection();
-              onClose();
-            }}
-            aria-label="Close"
-            className="ml-auto grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2"
-          >
-            <X className="h-[18px] w-[18px]" />
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => {
+                viewerRef.current?.clearSelection();
+                onClose();
+              }}
+              aria-label="Close"
+              className="ml-auto grid h-9 w-9 place-items-center rounded-lg text-muted hover:bg-surface-2"
+            >
+              <X className="h-[18px] w-[18px]" />
+            </button>
+          </div>
+        )}
 
-        {showColors && (
+        {showColors && variant === "full" && (
           <div className="flex items-center gap-2 border-t border-border px-3 py-2">
             {HIGHLIGHT_COLORS.map((c) => (
               <button
