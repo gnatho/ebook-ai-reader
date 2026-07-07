@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "books": {
+    "murder.epub": {
+      "id": "bk-10669adc5a0e04",
+      "title": "Murder at the vicarage",
+      "author": "Agatha Christie",
+      "format": "epub",
+      "size": 586290,
+      "addedAt": 1783417384946,
+      "cacheKey": "586290:1783417384946.4177"
+    },
+    "treasure.epub": {
+      "id": "bk-1dbb00ff07ea43",
+      "title": "Treasure Island",
+      "author": "Robert Louis Stevenson",
+      "format": "epub",
+      "size": 1178449,
+      "addedAt": 1783416968754,
+      "cacheKey": "1178449:1783416968754.1313"
+    }
+  }
+}
