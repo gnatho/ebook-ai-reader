@@ -5,11 +5,14 @@ import { ChevronLeft, ChevronRight, Settings, Loader2, AlertCircle } from "lucid
 import { TopBar, BackButton } from "@/components/TopBar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageToggle } from "@/components/LanguageToggle";
+import { FullscreenToggle } from "@/components/FullscreenToggle";
 import { EpubViewer, type EpubViewerHandle } from "./EpubViewer";
 import { SelectionMenu } from "./SelectionMenu";
 import { ReaderSettingsSheet } from "./ReaderSettingsSheet";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { bookFileUrl } from "@/lib/library-api";
+import { getBook } from "@/lib/idb-books";
+import { fetchCloudBytes } from "@/lib/cloud";
 import type { SelectionState } from "@/lib/types";
 
 interface ReaderScreenProps {
@@ -19,7 +22,9 @@ interface ReaderScreenProps {
 }
 
 export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
-  const book = useReaderStore((s) => s.books.find((b) => b.id === bookId));
+  const book = useReaderStore(
+    (s) => s.books.find((b) => b.id === bookId) ?? s.cloudBooks.find((b) => b.id === bookId),
+  );
   const saveProgress = useReaderStore((s) => s.saveProgress);
   const getProgress = useReaderStore((s) => s.getProgress);
 
@@ -38,13 +43,25 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
       setLoading(true);
       setError(null);
       try {
-        // Fetch the EPUB bytes from the shared library on the server.
-        const res = await fetch(bookFileUrl(bookId));
-        if (!res.ok) {
-          throw new Error("not-found");
+        const state = useReaderStore.getState();
+        const meta =
+          state.books.find((b) => b.id === bookId) ??
+          state.cloudBooks.find((b) => b.id === bookId);
+        let buf: ArrayBuffer | undefined;
+        if (meta?.source === "cloud") {
+          // Cloud books are cached in IndexedDB; fall back to GitHub.
+          buf =
+            (await getBook(bookId)) ??
+            (meta.cloudUrl ? await fetchCloudBytes(meta.cloudUrl) : undefined);
+        } else {
+          const res = await fetch(bookFileUrl(bookId));
+          if (!res.ok) {
+            throw new Error("not-found");
+          }
+          buf = await res.arrayBuffer();
         }
-        const buf = await res.arrayBuffer();
         if (cancelled) return;
+        if (!buf) throw new Error("not-found");
         setBytes(buf);
       } catch {
         if (!cancelled) {
@@ -71,6 +88,7 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
         right={
           <>
             <LanguageToggle />
+            <FullscreenToggle />
             <button
               type="button"
               aria-label="Reader settings"

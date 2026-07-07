@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BookText } from "lucide-react";
+import { BookText, CloudDownload } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { BottomNav, type Tab } from "@/components/BottomNav";
@@ -9,6 +9,7 @@ import { Library } from "@/components/Library";
 import { TranslationsPanel } from "@/components/TranslationsPanel";
 import { QuotesPanel } from "@/components/QuotesPanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
+import { CloudSheet } from "@/components/CloudSheet";
 import { ReaderScreen } from "@/components/reader/ReaderScreen";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { useHydrated } from "@/lib/hooks/useHydrated";
@@ -20,6 +21,7 @@ export default function Home() {
   const [reading, setReading] = useState(false);
   const [focusCfi, setFocusCfi] = useState<string | undefined>(undefined);
   const [loadingLibrary, setLoadingLibrary] = useState(true);
+  const [cloudOpen, setCloudOpen] = useState(false);
   const currentBookId = useReaderStore((s) => s.currentBookId);
   const setCurrentBook = useReaderStore((s) => s.setCurrentBook);
   const setBooks = useReaderStore((s) => s.setBooks);
@@ -76,7 +78,24 @@ export default function Home() {
 
   return (
     <div className="flex h-[100dvh] flex-col bg-background">
-      <TopBar title={titles[tab]} right={<ThemeToggle />} />
+      <TopBar
+        title={titles[tab]}
+        right={
+          <>
+            {tab === "library" && (
+              <button
+                type="button"
+                aria-label="Cloud library"
+                onClick={() => setCloudOpen(true)}
+                className="grid h-9 w-9 place-items-center rounded-full text-foreground/80 transition-colors hover:bg-surface-2 active:scale-95"
+              >
+                <CloudDownload className="h-5 w-5" />
+              </button>
+            )}
+            <ThemeToggle />
+          </>
+        }
+      />
 
       <main className="no-scrollbar flex-1 overflow-y-auto">
         {!hydrated || loadingLibrary ? (
@@ -91,6 +110,16 @@ export default function Home() {
           <SettingsPanel />
         )}
       </main>
+
+      {cloudOpen && (
+        <CloudSheet
+          onOpen={(id) => {
+            setCloudOpen(false);
+            openBook(id);
+          }}
+          onClose={() => setCloudOpen(false)}
+        />
+      )}
 
       <BottomNav active={tab} onChange={setTab} />
     </div>

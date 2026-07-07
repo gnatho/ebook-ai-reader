@@ -29,6 +29,18 @@ export interface BookMeta {
   cover?: string;
   addedAt: number;
   size: number;
+  source?: "server" | "cloud";
+  cloudUrl?: string;
+}
+
+export interface CloudCatalogEntry {
+  id: string;
+  title: string;
+  author?: string;
+  size: number;
+  addedAt: number;
+  filename: string;
+  rawUrl: string;
 }
 
 export interface ReadingProgress {

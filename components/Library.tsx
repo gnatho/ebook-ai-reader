@@ -5,6 +5,8 @@ import { BookOpen, Loader2, Trash2, Upload, User } from "lucide-react";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { formatBytes } from "@/lib/utils";
 import { uploadEpub, deleteEpub } from "@/lib/library-api";
+import { deleteBook } from "@/lib/idb-books";
+import type { BookMeta } from "@/lib/types";
 
 interface LibraryProps {
   onOpen: (bookId: string) => void;
@@ -22,9 +24,19 @@ export function Library({ onOpen }: LibraryProps) {
   const books = useReaderStore((s) => s.books);
   const progressMap = useReaderStore((s) => s.progress);
   const setBooks = useReaderStore((s) => s.setBooks);
+  const cloudBooks = useReaderStore((s) => s.cloudBooks);
+  const removeCloudBook = useReaderStore((s) => s.removeCloudBook);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Cloud-downloaded books are client-stored; merge them in for display,
+  // skipping any whose id already matches a server book (same content).
+  const serverIds = new Set(books.map((b) => b.id));
+  const allBooks = [
+    ...books,
+    ...cloudBooks.filter((b) => !serverIds.has(b.id)),
+  ];
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
@@ -45,14 +57,25 @@ export function Library({ onOpen }: LibraryProps) {
     }
   }
 
-  async function handleDelete(id: string, title: string) {
+  async function handleDelete(b: BookMeta) {
+    if (b.source === "cloud") {
+      if (!window.confirm(`Remove "${b.title}" from your library?`)) return;
+      setError(null);
+      try {
+        await deleteBook(b.id).catch(() => {});
+        removeCloudBook(b.id);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Delete failed.");
+      }
+      return;
+    }
     const ok = window.confirm(
-      `Remove "${title}" from the shared library?\n\nThis affects every user and cannot be undone.`,
+      `Remove "${b.title}" from the shared library?\n\nThis affects every user and cannot be undone.`,
     );
     if (!ok) return;
     setError(null);
     try {
-      const refreshed = await deleteEpub(id);
+      const refreshed = await deleteEpub(b.id);
       setBooks(refreshed);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Delete failed.");
@@ -93,11 +116,11 @@ export function Library({ onOpen }: LibraryProps) {
         </p>
       )}
 
-      {books.length === 0 ? (
+      {allBooks.length === 0 ? (
         <EmptyState />
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {books.map((b) => {
+          {allBooks.map((b) => {
             const p = progressMap[b.id]?.percentage ?? 0;
             return (
               <div
@@ -134,7 +157,7 @@ export function Library({ onOpen }: LibraryProps) {
                 <button
                   type="button"
                   aria-label="Remove book"
-                  onClick={() => handleDelete(b.id, b.title)}
+                  onClick={() => handleDelete(b)}
                   className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-background/70 text-muted opacity-0 transition-opacity group-hover:opacity-100 hover:text-red-400"
                 >
                   <Trash2 className="h-4 w-4" />

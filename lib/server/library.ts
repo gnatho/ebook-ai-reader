@@ -70,7 +70,10 @@ interface Manifest {
 /** List every EPUB in the shared library, newest first. */
 export async function listBooks(): Promise<BookMeta[]> {
   return withLock(async () => {
-    await ensureDir();
+    // Best-effort: on read-only deployments (e.g. Vercel) the library dir may
+    // not exist and can't be created — readEpubFiles() handles that by
+    // returning [], so listing still resolves to an empty library.
+    await ensureDir().catch(() => {});
     const files = await readEpubFiles();
     const manifest = await readManifest();
     const next: Record<string, ManifestEntry> = {};

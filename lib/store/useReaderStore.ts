@@ -27,6 +27,7 @@ interface ReaderState {
   progress: Record<string, ReadingProgress>;
   translations: SavedTranslation[];
   quotes: SavedQuote[];
+  cloudBooks: BookMeta[];
 
   setBooks: (books: BookMeta[]) => void;
   removeBook: (id: string) => void;
@@ -42,6 +43,10 @@ interface ReaderState {
   addQuote: (q: Omit<SavedQuote, "id" | "createdAt">) => SavedQuote;
   removeQuote: (id: string) => void;
   quotesFor: (bookId: string) => SavedQuote[];
+
+  setCloudBooks: (books: BookMeta[]) => void;
+  addCloudBook: (book: BookMeta) => void;
+  removeCloudBook: (id: string) => void;
 }
 
 export const useReaderStore = create<ReaderState>()(
@@ -52,6 +57,7 @@ export const useReaderStore = create<ReaderState>()(
       progress: {},
       translations: [],
       quotes: [],
+      cloudBooks: [],
 
       setBooks: (books) => set({ books }),
       // Optimistic local removal used after a successful server delete.
@@ -59,6 +65,17 @@ export const useReaderStore = create<ReaderState>()(
         set((s) => ({
           books: s.books.filter((b) => b.id !== id),
           currentBookId: s.currentBookId === id ? null : s.currentBookId,
+        })),
+      setCloudBooks: (cloudBooks) => set({ cloudBooks }),
+      addCloudBook: (book) =>
+        set((s) => ({
+          cloudBooks: s.cloudBooks.some((b) => b.id === book.id)
+            ? s.cloudBooks
+            : [book, ...s.cloudBooks],
+        })),
+      removeCloudBook: (id) =>
+        set((s) => ({
+          cloudBooks: s.cloudBooks.filter((b) => b.id !== id),
         })),
       setCurrentBook: (id) => set({ currentBookId: id }),
 
@@ -98,17 +115,19 @@ export const useReaderStore = create<ReaderState>()(
     {
       name: "ebook-reader:reader",
       storage: createJSONStorage(() => localStorage),
-      version: 3,
+      version: 4,
       // Only persist per-user reading state — the shared book list is fetched.
       partialize: (s) => ({
         currentBookId: s.currentBookId,
         progress: s.progress,
         translations: s.translations,
         quotes: s.quotes,
+        cloudBooks: s.cloudBooks,
       }),
       // Rebuild persisted state for any prior version: drop the legacy
-      // `highlights` collection (replaced by `translations`) and drop the
-      // server-authoritative `books`/`sampleBookId` fields from v1.
+      // `highlights` collection (replaced by `translations`), drop the
+      // server-authoritative `books`/`sampleBookId` fields from v1, and add
+      // `cloudBooks` (client-stored GitHub downloads) in v4.
       migrate: (persisted) => {
         const p = (persisted ?? {}) as Partial<ReaderState>;
         return {
@@ -116,6 +135,7 @@ export const useReaderStore = create<ReaderState>()(
           progress: p.progress ?? {},
           translations: p.translations ?? [],
           quotes: p.quotes ?? [],
+          cloudBooks: p.cloudBooks ?? [],
         };
       },
     }
