@@ -35,7 +35,6 @@ function buildContextBlock(req: LlmRequest): string {
 
 function buildPrompt(req: LlmRequest): { system: string; user: string } {
   const term = req.text.trim();
-  const sentence = (req.sentence ?? "").trim();
   const context = buildContextBlock(req);
   const isWord = req.isWord ?? !/\s/.test(term);
   const typeLabel = isWord ? "single word" : "phrase";
@@ -44,8 +43,8 @@ function buildPrompt(req: LlmRequest): { system: string; user: string } {
     case "simplify":
       return {
         system:
-          "You are a reading assistant. Rewrite the given English sentence into plain, simple English that is easy to understand while preserving the original meaning. Use the surrounding context only to resolve references and pick the correct meaning; do not add information that is not in the text. If the text is a single word or fragment, explain it simply instead.",
-        user: `Sentence to simplify: ${sentence || term}${context}\n\nReturn JSON {"result": "<simplified sentence>", "example": ""}`,
+          "You are a reading assistant. Rewrite only the selected text into plain, simple English that is easy to understand while preserving the original meaning. Use the surrounding context only to resolve references and pick the correct meaning; do not add information that is not in the text, and do not simplify or rewrite anything outside the selected text. If the selected text is a single word or short fragment, give a brief plain-English explanation of what it means in this context instead of rewriting it.",
+        user: `Text to simplify: ${term}${context}\n\nReturn JSON {"result": "<simplified or explained text>", "example": ""}`,
       };
     case "define":
       return {

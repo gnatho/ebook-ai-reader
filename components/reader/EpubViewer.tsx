@@ -12,8 +12,12 @@ import { useReaderStore } from "@/lib/store/useReaderStore";
 import { cn } from "@/lib/utils";
 import { extractSelectionContext } from "@/lib/sentenceContext";
 import {
+  applyHighlight,
   buildSelectionState,
-  setSelectionRange,
+  cfiFromRangeSafe,
+  clearHighlightsInRendition,
+  injectSelectionStyles,
+  rangeFromCfiSafe,
   sameRange,
   spanningRange,
   wordRangeAtPoint,
@@ -84,6 +88,11 @@ const SWIPE_ANIM_MS = 220;
 
 const LONG_PRESS_MS = 500;
 const LONG_PRESS_TOLERANCE = 12;
+// Touch devices also fire synthesized mouse events for the same gesture. We
+// ignore mouse events arriving within this window of a real touch so a single
+// tap isn't processed twice (which would make tap-1's highlight immediately
+// become tap-2's instant-translate).
+const TOUCH_MOUSE_GUARD_MS = 600;
 
 type EpubManagerLike = {
   container?: HTMLElement;
@@ -99,25 +108,6 @@ function getScroller(
   if (!container || typeof delta !== "number" || delta <= 0) return null;
   const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth);
   return { container, delta, maxScroll };
-}
-
-function eachContents(rendition: Rendition): Array<{
-  window?: { getSelection?: () => Selection | null };
-}> {
-  const list = (
-    rendition as unknown as { getContents?: () => unknown }
-  ).getContents?.();
-  if (Array.isArray(list)) return list as Array<{ window?: { getSelection?: () => Selection | null } }>;
-  return list != null
-    ? [list as { window?: { getSelection?: () => Selection | null } }]
-    : [];
-}
-
-function clearSelectionInIframe(rendition: Rendition): void {
-  for (const c of eachContents(rendition)) {
-    const sel = c?.window?.getSelection?.();
-    sel?.removeAllRanges?.();
-  }
 }
 
 export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
@@ -154,8 +144,10 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       null
     );
     const suppressSelectedUntilRef = useRef(0);
+    const lastTouchRef = useRef(0);
     const pendingWordRef = useRef<{
       range: Range;
+      cfi: string;
       contents: Contents;
     } | null>(null);
     const mouseTapRef = useRef<{
@@ -180,11 +172,12 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       rendition.themes.override("font-family", fontFamilyStack(settings.fontFamily), true);
       rendition.themes.override("touch-action", "pan-y", true);
       rendition.themes.override("overscroll-behavior", "none", true);
-      // Keep native text selection enabled so users can drag-select words,
-      // phrases and sentences (with the browser's native highlight). Our
-      // long-press gesture sets a real selection, which fires epubjs's
-      // selectionchange-based "selected" event to show the popup.
+      // Native text selection is disabled (via injected CSS in
+      // injectSelectionStyles) so the mobile selection handles / magnifier
+      // don't fight our tap model. Highlights are drawn ourselves through the
+      // CSS Custom Highlight API (with a span fallback).
       rendition.themes.override("-webkit-tap-highlight-color", "transparent", true);
+      injectSelectionStyles(rendition);
     }
 
     function selectTheme(theme: "dark" | "light") {
@@ -257,8 +250,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
 
       const clearTapSelection = () => {
         pendingWordRef.current = null;
-        const rend = renditionRef.current;
-        if (rend) clearSelectionInIframe(rend);
+        clearHighlightsInRendition(renditionRef.current);
         callbacksRef.current.onSelectionCleared?.();
       };
 
@@ -267,7 +259,8 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         range: Range,
         variant: SelectionVariant
       ) => {
-        setSelectionRange(contents, range);
+        clearHighlightsInRendition(renditionRef.current);
+        applyHighlight(contents, range);
         markProgrammaticSelection();
         pendingWordRef.current = null;
         callbacksRef.current.onSelection?.(
@@ -275,48 +268,88 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         );
       };
 
-      const handleTap = (
-        resolved: { range: Range; contents: Contents } | null
+      const rememberPendingWord = (
+        resolved: { range: Range; contents: Contents }
       ) => {
+        applyHighlight(resolved.contents, resolved.range);
+        markProgrammaticSelection();
+        pendingWordRef.current = {
+          range: resolved.range,
+          cfi: cfiFromRangeSafe(resolved.contents, resolved.range),
+          contents: resolved.contents,
+        };
+      };
+
+      const handleTap = (
+        target: Element | null,
+        x: number,
+        y: number
+      ) => {
+        const resolved = resolveWordAt(target, x, y);
         if (!resolved) {
           clearTapSelection();
           return;
         }
         const pending = pendingWordRef.current;
         if (!pending) {
-          // First tap: visually select the word and remember it (no menu).
-          setSelectionRange(resolved.contents, resolved.range);
-          markProgrammaticSelection();
-          pendingWordRef.current = {
-            range: resolved.range,
-            contents: resolved.contents,
-          };
+          // First tap: highlight the word and remember it (no menu yet).
+          clearHighlightsInRendition(renditionRef.current);
+          callbacksRef.current.onSelectionCleared?.();
+          rememberPendingWord(resolved);
           return;
         }
         const sameDoc =
           pending.contents.document === resolved.contents.document;
-        if (sameDoc && sameRange(pending.range, resolved.range)) {
-          // Second tap on the same word -> instant translate, no menu.
-          showMenu(resolved.contents, resolved.range, "instantTranslate");
-        } else if (sameDoc) {
-          // Two different words -> select the whole range and show the menu.
-          showMenu(resolved.contents, spanningRange(pending.range, resolved.range), "range");
-        } else {
+        if (!sameDoc) {
           // Cross-page tap -> treat as a fresh first tap.
-          setSelectionRange(resolved.contents, resolved.range);
-          markProgrammaticSelection();
-          pendingWordRef.current = {
-            range: resolved.range,
-            contents: resolved.contents,
-          };
+          clearHighlightsInRendition(renditionRef.current);
+          callbacksRef.current.onSelectionCleared?.();
+          rememberPendingWord(resolved);
+          return;
+        }
+        // Second tap on the same page. Clear the pending highlight first so the
+        // range we build always references an unmodified DOM, then re-resolve
+        // the tapped word on that clean DOM.
+        clearHighlightsInRendition(renditionRef.current);
+        const pendingRange =
+          rangeFromCfiSafe(pending.contents, pending.cfi) ?? pending.range;
+        const resolvedB = resolveWordAt(target, x, y);
+        if (!resolvedB) {
+          clearTapSelection();
+          return;
+        }
+        const newCfi = cfiFromRangeSafe(resolvedB.contents, resolvedB.range);
+        const sameWord =
+          (pending.cfi && newCfi ? pending.cfi === newCfi : false) ||
+          sameRange(pendingRange, resolvedB.range);
+        if (sameWord) {
+          // Second tap on the same word -> instant translate, no menu.
+          showMenu(resolvedB.contents, resolvedB.range, "instantTranslate");
+        } else {
+          // Two different words -> select the whole range and show the menu.
+          showMenu(
+            resolvedB.contents,
+            spanningRange(pendingRange, resolvedB.range),
+            "range"
+          );
         }
       };
 
       const handleLongPress = (
-        resolved: { range: Range; contents: Contents } | null
+        target: Element | null,
+        x: number,
+        y: number
       ) => {
+        clearHighlightsInRendition(renditionRef.current);
+        callbacksRef.current.onSelectionCleared?.();
+        const resolved = resolveWordAt(target, x, y);
         if (!resolved) return;
-        showMenu(resolved.contents, resolved.range, "full");
+        applyHighlight(resolved.contents, resolved.range);
+        markProgrammaticSelection();
+        pendingWordRef.current = null;
+        callbacksRef.current.onSelection?.(
+          buildSelectionState(resolved.contents, resolved.range, "full")
+        );
         if (typeof navigator !== "undefined" && navigator.vibrate) {
           try {
             navigator.vibrate(12);
@@ -365,6 +398,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       };
 
       const onTouchStart = (e: Event) => {
+        lastTouchRef.current = Date.now();
         const te = e as TouchEvent;
         const st = swipeRef.current;
         const rend = renditionRef.current;
@@ -402,7 +436,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           stt.active = false;
           stt.decided = true;
           stt.horizontal = false;
-          handleLongPress(resolveWordAt(stt.tapTarget, stt.tapClientX, stt.tapClientY));
+          handleLongPress(stt.tapTarget, stt.tapClientX, stt.tapClientY);
         }, LONG_PRESS_MS);
       };
 
@@ -453,6 +487,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       };
 
       const onTouchEnd = () => {
+        lastTouchRef.current = Date.now();
         const st = swipeRef.current;
         clearLongPress();
 
@@ -464,7 +499,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         // A tap is a quick touch with no significant movement.
         if (!st.tapMoved) {
           st.active = false;
-          handleTap(resolveWordAt(st.tapTarget, st.tapClientX, st.tapClientY));
+          handleTap(st.tapTarget, st.tapClientX, st.tapClientY);
           return;
         }
 
@@ -509,13 +544,15 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       };
 
       const onMouseDown = (e: Event) => {
+        // Ignore mouse events that are synthesized from a recent touch.
+        if (Date.now() - lastTouchRef.current < TOUCH_MOUSE_GUARD_MS) return;
         const me = e as MouseEvent;
         const target = (me.target as Element | null) ?? null;
         const x = me.clientX;
         const y = me.clientY;
         if (me.button === 2) {
           suppressContextMenuFor(target);
-          handleLongPress(resolveWordAt(target, x, y));
+          handleLongPress(target, x, y);
           return;
         }
         if (me.button !== 0) return;
@@ -526,7 +563,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           const mt = mouseTapRef.current;
           if (!mt || mt.moved) return;
           mt.longClicked = true;
-          handleLongPress(resolveWordAt(mt.target, mt.x, mt.y));
+          handleLongPress(mt.target, mt.x, mt.y);
         }, LONG_PRESS_MS);
       };
 
@@ -543,14 +580,16 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
       };
 
       const onMouseUp = (e: Event) => {
+        // Ignore mouse events that are synthesized from a recent touch.
+        if (Date.now() - lastTouchRef.current < TOUCH_MOUSE_GUARD_MS) return;
         const me = e as MouseEvent;
         if (me.button !== 0) return;
         clearMouseLongPress();
         const mt = mouseTapRef.current;
         mouseTapRef.current = null;
         if (!mt || mt.longClicked) return; // long-click handled
-        if (mt.moved) return; // drag-select: let native selection + onSelected handle
-        handleTap(resolveWordAt(mt.target, mt.x, mt.y));
+        if (mt.moved) return; // a drag: no native selection to fall back on
+        handleTap(mt.target, mt.x, mt.y);
       };
 
       void (async () => {
@@ -635,6 +674,11 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           .catch(() => {});
 
         const onRelocated = (location: Rendition["location"]) => {
+          // A page turn invalidates any pending word / open menu: drop the
+          // highlight and reset the tap state.
+          clearHighlightsInRendition(renditionRef.current);
+          pendingWordRef.current = null;
+          callbacksRef.current.onSelectionCleared?.();
           if (!location?.start?.cfi) return;
           const percentage = b.locations.length()
             ? b.locations.percentageFromCfi(location.start.cfi)
@@ -647,11 +691,11 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           });
         };
 
+        const onRendered = () => injectSelectionStyles(rend);
+
         const onSelected = (cfiRange: string, contents: Contents) => {
-          // Ignore selections we set ourselves (taps/long-press); those are
-          // surfaced directly via onSelection. This handler only fires for
-          // genuine drag-selections (e.g. desktop mouse drag), showing the
-          // full menu.
+          // Native selection is disabled, so this only fires for genuine
+          // drag-selections (e.g. desktop mouse drag) that slip through.
           if (Date.now() < suppressSelectedUntilRef.current) return;
           try {
             const win = contents.window;
@@ -691,6 +735,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
 
         rend.on("relocated", onRelocated);
         rend.on("selected", onSelected);
+        rend.on("rendered", onRendered);
         rend.on("touchstart", onTouchStart);
         rend.on("touchmove", onTouchMove);
         rend.on("touchend", onTouchEnd);
@@ -759,9 +804,7 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           });
         },
         clearSelection: () => {
-          const rendition = renditionRef.current;
-          const win = rendition?.getContents?.()?.window;
-          win?.getSelection?.()?.removeAllRanges?.();
+          clearHighlightsInRendition(renditionRef.current);
         },
       };
     });

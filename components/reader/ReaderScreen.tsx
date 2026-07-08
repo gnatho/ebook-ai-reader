@@ -33,6 +33,7 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<SelectionState | null>(null);
+  const [selKey, setSelKey] = useState(0);
   const [progress, setProgress] = useState(() => getProgress(bookId));
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -149,13 +150,17 @@ export function ReaderScreen({ bookId, focusCfi, onBack }: ReaderScreenProps) {
               saveProgress(next);
               setProgress(next);
             }}
-            onSelection={(sel) => setSelection(sel)}
+            onSelection={(sel) => {
+              setSelKey((k) => k + 1);
+              setSelection(sel);
+            }}
             onSelectionCleared={() => setSelection(null)}
           />
         )}
 
         {selection && (
           <SelectionMenu
+            key={selKey}
             selection={selection}
             bookId={bookId}
             viewerRef={viewerRef}
