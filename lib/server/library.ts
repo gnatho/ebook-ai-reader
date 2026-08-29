@@ -164,8 +164,8 @@ export async function addBook(
     // Atomic write: temp file + rename so a crash never leaves a partial epub.
     const tmpPath = `${filePath}.part`;
     const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
-    await fs.writeFile(tmpPath, Buffer.from(data));
-    await fs.rename(tmpPath, filePath);
+    await withFileRetry(() => fs.writeFile(tmpPath, Buffer.from(data)));
+    await withFileRetry(() => fs.rename(tmpPath, filePath));
 
     const stat = await fs.stat(filePath);
     const entry = await buildEntry(
@@ -322,6 +322,29 @@ async function ensureDir(): Promise<void> {
   await fs.mkdir(LIBRARY_DIR, { recursive: true });
 }
 
+/**
+ * Retry a filesystem mutation a few times before giving up. On Windows,
+ * antivirus/indexer/sync tools briefly lock freshly written files, making
+ * `rename`/`write` fail with EPERM/EACCES/EBUSY even though nothing is
+ * permanently wrong.
+ */
+async function withFileRetry<T>(fn: () => Promise<T>, attempts = 4): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | null)?.code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY") {
+        throw err;
+      }
+      lastErr = err;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 async function readEpubFiles(): Promise<string[]> {
   try {
     const entries = await fs.readdir(LIBRARY_DIR, { withFileTypes: true });
@@ -350,8 +373,10 @@ async function readManifest(): Promise<Manifest> {
 async function writeManifest(manifest: Manifest): Promise<void> {
   await ensureDir();
   const tmp = `${MANIFEST_PATH}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(manifest, null, 2), "utf8");
-  await fs.rename(tmp, MANIFEST_PATH);
+  await withFileRetry(() =>
+    fs.writeFile(tmp, JSON.stringify(manifest, null, 2), "utf8"),
+  );
+  await withFileRetry(() => fs.rename(tmp, MANIFEST_PATH));
 }
 
 /**

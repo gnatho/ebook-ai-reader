@@ -67,7 +67,11 @@ export async function POST(request: Request) {
     }
     console.error("library upload failed:", err);
     return NextResponse.json(
-      { error: "Upload failed. Please try again." },
+      {
+        error: `Upload failed: ${
+          err instanceof Error ? err.message : "unexpected error"
+        }`,
+      },
       { status: 500 },
     );
   }

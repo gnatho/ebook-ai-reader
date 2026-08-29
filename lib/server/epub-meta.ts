@@ -30,48 +30,49 @@ export async function extractEpubMetadata(
 ): Promise<EpubMetadata> {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
 
-  let zip: JSZip;
+  // Metadata extraction must never throw: any unreadable/corrupt/DRM'd part
+  // of the archive falls back to a filename-derived title instead of failing
+  // the whole upload.
   try {
-    zip = await JSZip.loadAsync(data);
+    const zip = await JSZip.loadAsync(data);
+
+    // 1. Resolve the root Package Document (.opf) path from container.xml.
+    const containerFile = zip.file("META-INF/container.xml");
+    let opfPath: string | null = null;
+    if (containerFile) {
+      const containerXml = await containerFile.async("string");
+      opfPath = extractOpfPath(containerXml);
+    }
+    // Fallback: pick the first .opf entry in the archive.
+    if (!opfPath) {
+      opfPath =
+        Object.keys(zip.files).find((p) => /\.opf$/i.test(p)) ?? null;
+    }
+    if (!opfPath) {
+      return { title: fallbackTitle(fallback) };
+    }
+
+    const opfFile = zip.file(opfPath) ?? zip.file(opfPath.toLowerCase());
+    if (!opfFile) {
+      return { title: fallbackTitle(fallback) };
+    }
+
+    const opfXml = await opfFile.async("string");
+    const metadata = extractMetadataBlock(opfXml);
+
+    const rawTitle =
+      firstElementText(metadata, "title") ??
+      firstElementText(opfXml, "title") ??
+      fallbackTitle(fallback);
+    const author = extractAuthor(metadata);
+
+    return {
+      title: cleanText(rawTitle) || fallbackTitle(fallback),
+      author: author ? cleanText(author) : undefined,
+    };
   } catch {
-    // Not a readable ZIP — fall back to the filename.
     return { title: fallbackTitle(fallback) };
   }
-
-  // 1. Resolve the root Package Document (.opf) path from container.xml.
-  const containerFile = zip.file("META-INF/container.xml");
-  let opfPath: string | null = null;
-  if (containerFile) {
-    const containerXml = await containerFile.async("string");
-    opfPath = extractOpfPath(containerXml);
-  }
-  // Fallback: pick the first .opf entry in the archive.
-  if (!opfPath) {
-    opfPath =
-      Object.keys(zip.files).find((p) => /\.opf$/i.test(p)) ?? null;
-  }
-  if (!opfPath) {
-    return { title: fallbackTitle(fallback) };
-  }
-
-  const opfFile = zip.file(opfPath) ?? zip.file(opfPath.toLowerCase());
-  if (!opfFile) {
-    return { title: fallbackTitle(fallback) };
-  }
-
-  const opfXml = await opfFile.async("string");
-  const metadata = extractMetadataBlock(opfXml);
-
-  const rawTitle =
-    firstElementText(metadata, "title") ??
-    firstElementText(opfXml, "title") ??
-    fallbackTitle(fallback);
-  const author = extractAuthor(metadata);
-
-  return {
-    title: cleanText(rawTitle) || fallbackTitle(fallback),
-    author: author ? cleanText(author) : undefined,
-  };
 }
 
 /** Read `full-path="..."` from the `<rootfile>` element in container.xml. */
