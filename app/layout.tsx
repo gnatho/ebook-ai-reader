@@ -27,6 +27,12 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // iOS Safari: without this, the double-tap zoom gesture recognizer swallows
+  // the second tap of a fast double-tap (no touchstart/touchend fires), which
+  // breaks the tap-word-then-tap-again translate flow. Pinch zoom on iOS stays
+  // available (WebKit exempts it for accessibility).
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
   themeColor: "#0c0c0e",
 };

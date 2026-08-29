@@ -211,9 +211,38 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         }
       };
 
-      const suppressedContextDocs = new Set<Document>();
+      // epub.js only forwards a fixed list of DOM events (DOM_EVENTS) which
+      // does not include touchcancel, so hook the iframe documents directly.
+      // On iOS, WebKit cancels the touch whenever it takes over the gesture
+      // (double-tap zoom, long-press callout, system edge swipes); without
+      // this, the long-press timer and swipe state would be stuck for the
+      // next gesture. contextmenu is prevented unconditionally because iOS
+      // fires it on long-press and the system sheet would kill the selection.
+      const hookedDocs = new Set<Document>();
       const preventContextMenu = (e: Event) => {
         e.preventDefault();
+      };
+      const onDocTouchCancel = () => {
+        lastTouchRef.current = Date.now();
+        clearLongPress();
+        const st = swipeRef.current;
+        st.active = false;
+      };
+      const hookContentsEvents = () => {
+        const rend = renditionRef.current;
+        const list =
+          (rend as unknown as { getContents?: () => Contents[] }).getContents?.() ??
+          [];
+        for (const c of list) {
+          const doc = c?.document;
+          if (!doc || hookedDocs.has(doc)) continue;
+          hookedDocs.add(doc);
+          doc.addEventListener("contextmenu", preventContextMenu, true);
+          doc.addEventListener("touchcancel", onDocTouchCancel, {
+            passive: true,
+            capture: true,
+          });
+        }
       };
 
       const findContentsForDoc = (doc: Document | null) => {
@@ -355,13 +384,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
             navigator.vibrate(12);
           } catch {}
         }
-      };
-
-      const suppressContextMenuFor = (target: Element | null) => {
-        const doc = target?.ownerDocument ?? null;
-        if (!doc || suppressedContextDocs.has(doc)) return;
-        doc.addEventListener("contextmenu", preventContextMenu, true);
-        suppressedContextDocs.add(doc);
       };
 
       const cancelSwipeAnim = () => {
@@ -551,7 +573,6 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         const x = me.clientX;
         const y = me.clientY;
         if (me.button === 2) {
-          suppressContextMenuFor(target);
           handleLongPress(target, x, y);
           return;
         }
@@ -691,7 +712,13 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
           });
         };
 
-        const onRendered = () => injectSelectionStyles(rend);
+        const onRendered = () => {
+          injectSelectionStyles(rend);
+          hookContentsEvents();
+          // The Contents document may attach just after this event fires, so
+          // retry once on the next frame.
+          requestAnimationFrame(hookContentsEvents);
+        };
 
         const onSelected = (cfiRange: string, contents: Contents) => {
           // Native selection is disabled, so this only fires for genuine
@@ -751,10 +778,13 @@ export const EpubViewer = forwardRef<EpubViewerHandle, EpubViewerProps>(
         clearMouseLongPress();
         mouseTapRef.current = null;
         pendingWordRef.current = null;
-        suppressedContextDocs.forEach((doc) =>
-          doc.removeEventListener("contextmenu", preventContextMenu, true)
-        );
-        suppressedContextDocs.clear();
+        hookedDocs.forEach((doc) => {
+          doc.removeEventListener("contextmenu", preventContextMenu, true);
+          doc.removeEventListener("touchcancel", onDocTouchCancel, {
+            capture: true,
+          });
+        });
+        hookedDocs.clear();
         cancelSwipeAnim();
         try { rendition?.off("touchstart", onTouchStart); } catch {}
         try { rendition?.off("touchmove", onTouchMove); } catch {}

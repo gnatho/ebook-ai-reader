@@ -76,6 +76,7 @@ button {
   -webkit-tap-highlight-color: transparent;
   -webkit-user-select: none;
   user-select: none;
+  touch-action: pan-y;
 }
 
 .epub-view iframe {
