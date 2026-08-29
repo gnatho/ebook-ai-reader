@@ -273,6 +273,7 @@ async function addBookBlob(
       access: "public",
       contentType: "application/epub+zip",
       addRandomSuffix: false,
+      allowOverwrite: true,
     });
 
     const entry = await buildEntry(
@@ -549,6 +550,7 @@ async function writeBlobManifest(manifest: Manifest): Promise<void> {
     access: "public",
     contentType: "application/json",
     addRandomSuffix: false,
+    allowOverwrite: true,
   });
 }
 
