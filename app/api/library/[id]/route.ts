@@ -3,6 +3,8 @@ import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import {
   getBookPath,
+  getBookUrl,
+  isBlobStorage,
   removeBook,
   listBooks,
   createReadStream,
@@ -16,13 +18,31 @@ interface RouteParams {
 }
 
 /**
- * GET /api/library/[id] — stream a single EPUB file for reading.
+ * GET /api/library/[id] — serve a single EPUB file for reading.
  *
- * The id is a content hash (never a path); `getBookPath` validates that the
- * resolved path stays inside the shared library directory.
+ * The id is a content hash (never a path). Disk mode streams the file from
+ * the shared library directory; blob mode redirects to the book's Vercel
+ * Blob URL (CORS-enabled, range-request-capable CDN).
  */
 export async function GET(_req: Request, { params }: RouteParams) {
   const { id } = await params;
+
+  if (isBlobStorage) {
+    let blobUrl: string | null;
+    try {
+      blobUrl = await getBookUrl(id);
+    } catch (err) {
+      console.error("library get failed:", err);
+      blobUrl = null;
+    }
+    if (!blobUrl) {
+      return NextResponse.json(
+        { error: "Book not found in the shared library." },
+        { status: 404 },
+      );
+    }
+    return NextResponse.redirect(blobUrl, 302);
+  }
 
   let filePath: string | null;
   try {

@@ -1,10 +1,18 @@
 /**
  * Server-side shared EPUB library.
  *
- * All EPUBs live in a single shared folder (`library/epubs/` by default) and
- * are visible to every user. Book bytes are stored on disk; metadata is
- * extracted once per file (see `epub-meta.ts`) and cached in a small manifest
- * so listing the library stays fast.
+ * Two storage backends behind one API (`listBooks` / `addBook` / `removeBook`):
+ *
+ *  - Disk mode (default): all EPUBs live in a single shared folder
+ *    (`library/epubs/` by default) and are visible to every user. Book bytes
+ *    are stored on disk; metadata is extracted once per file (see
+ *    `epub-meta.ts`) and cached in a small manifest so listing stays fast.
+ *    Used for local dev and any host with a persistent, writable disk.
+ *
+ *  - Blob mode (when `BLOB_READ_WRITE_TOKEN` is set, i.e. a Vercel deployment
+ *    with a connected Blob store): EPUBs and the manifest live in Vercel Blob
+ *    under `epubs/…`, since serverless filesystems are read-only and
+ *    ephemeral. The manifest maps content-hash ids to blob URLs.
  *
  * Security for multi-user shared access:
  *  - Files are addressed only by a content-hash `id`, never by user-supplied
@@ -12,20 +20,29 @@
  *  - `getBookPath` resolves an id to a real path and verifies the resolved
  *    path stays inside the library directory (defence against traversal).
  *  - Uploads are validated: `.epub` extension + ZIP magic bytes + size cap.
- *  - All manifest mutations are serialized with an in-process lock so
- *    concurrent uploads from multiple users can't corrupt the manifest.
+ *  - Manifest mutations are serialized with an in-process lock.
  *
  * This module is Node-only.
  */
 import { promises as fs } from "node:fs";
 import { createReadStream } from "node:fs";
 import path from "node:path";
+import { put, del, head } from "@vercel/blob";
 import type { BookMeta } from "@/lib/types";
 import { hashBytes } from "@/lib/hash";
 import { extractEpubMetadata } from "./epub-meta";
 
 /** Maximum accepted upload size (100 MB). */
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+/**
+ * Storage mode. On hosts with a persistent disk (local dev, VPS) books are
+ * stored under `LIBRARY_DIR`. On read-only serverless hosts (e.g. Vercel) a
+ * Vercel Blob store is used instead — detected via the auto-injected
+ * `BLOB_READ_WRITE_TOKEN`. Connect a Blob store in the Vercel dashboard to
+ * enable uploads there.
+ */
+export const isBlobStorage = !!process.env.BLOB_READ_WRITE_TOKEN;
 
 /**
  * Root directory of the shared library. Defaults to `library/epubs` under the
@@ -54,8 +71,10 @@ interface ManifestEntry {
   format: "epub";
   size: number;
   addedAt: number;
-  /** `${size}:${mtimeMs}` — used to cheaply detect changed/unchanged files. */
-  cacheKey: string;
+  /** `${size}:${mtimeMs}` — used to cheaply detect changed/unchanged files (disk mode). */
+  cacheKey?: string;
+  /** Vercel Blob download URL (blob mode only). */
+  url?: string;
 }
 
 interface Manifest {
@@ -69,6 +88,11 @@ interface Manifest {
 
 /** List every EPUB in the shared library, newest first. */
 export async function listBooks(): Promise<BookMeta[]> {
+  return isBlobStorage ? listBooksBlob() : listBooksDisk();
+}
+
+/** Disk-mode list: reads the shared library directory. */
+async function listBooksDisk(): Promise<BookMeta[]> {
   return withLock(async () => {
     // Best-effort: on read-only deployments (e.g. Vercel) the library dir may
     // not exist and can't be created — readEpubFiles() handles that by
@@ -116,9 +140,25 @@ export async function listBooks(): Promise<BookMeta[]> {
 }
 
 /**
+ * Blob-mode list: reads the manifest blob. Book blobs themselves are the
+ * source of truth on disk mode; in blob mode the manifest plays that role
+ * (a lost manifest entry only falls back to filename-derived metadata).
+ */
+async function listBooksBlob(): Promise<BookMeta[]> {
+  return withLock(async () => {
+    const manifest = await readBlobManifest();
+    return Object.values(manifest.books)
+      .map(toBookMeta)
+      .sort((a, b) => b.addedAt - a.addedAt);
+  });
+}
+
+/**
  * Resolve a book id to an absolute filesystem path, verifying the resolved
  * path remains inside the library directory. Returns `null` if not found or
  * the path would escape the library (path traversal attempt).
+ *
+ * Disk mode only — the blob-mode equivalent is `getBookUrl`.
  */
 export async function getBookPath(id: string): Promise<string | null> {
   return withLock(async () => {
@@ -137,11 +177,32 @@ export async function getBookPath(id: string): Promise<string | null> {
 }
 
 /**
+ * Blob mode: resolve a book id to its Vercel Blob download URL. Returns
+ * `null` when the book is not in the manifest (or lacks a stored URL).
+ */
+export async function getBookUrl(id: string): Promise<string | null> {
+  return withLock(async () => {
+    const manifest = await readBlobManifest();
+    const filename = findFilenameById(manifest, id);
+    if (!filename) return null;
+    return manifest.books[filename].url ?? null;
+  });
+}
+
+/**
  * Store an uploaded EPUB in the shared library and return its metadata.
  * Duplicate uploads (same content hash) return the existing entry instead of
  * storing a second copy.
  */
 export async function addBook(
+  originalName: string,
+  bytes: ArrayBuffer | Uint8Array,
+): Promise<BookMeta> {
+  return isBlobStorage ? addBookBlob(originalName, bytes) : addBookDisk(originalName, bytes);
+}
+
+/** Disk-mode store: writes into `LIBRARY_DIR`. */
+async function addBookDisk(
   originalName: string,
   bytes: ArrayBuffer | Uint8Array,
 ): Promise<BookMeta> {
@@ -158,7 +219,11 @@ export async function addBook(
       return toBookMeta(manifest.books[existing]);
     }
 
-    const filename = await pickUniqueFilename(id, originalName);
+    const filename = pickUniqueFilename(
+      id,
+      originalName,
+      new Set(await readEpubFiles()),
+    );
     const filePath = path.join(LIBRARY_DIR, filename);
 
     // Atomic write: temp file + rename so a crash never leaves a partial epub.
@@ -181,8 +246,58 @@ export async function addBook(
   });
 }
 
+/** Blob-mode store: uploads the EPUB and manifest to Vercel Blob. */
+async function addBookBlob(
+  originalName: string,
+  bytes: ArrayBuffer | Uint8Array,
+): Promise<BookMeta> {
+  return withLock(async () => {
+    validateEpub(originalName, bytes);
+
+    const id = hashBytes(bytes);
+    const manifest = await readBlobManifest();
+
+    // Deduplicate by content hash.
+    const existing = findFilenameById(manifest, id);
+    if (existing) {
+      return toBookMeta(manifest.books[existing]);
+    }
+
+    const filename = pickUniqueFilename(
+      id,
+      originalName,
+      new Set(Object.keys(manifest.books)),
+    );
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const blob = await put(`epubs/${filename}`, Buffer.from(data), {
+      access: "public",
+      contentType: "application/epub+zip",
+      addRandomSuffix: false,
+    });
+
+    const entry = await buildEntry(
+      filename,
+      bytes,
+      data.byteLength,
+      Date.now(),
+      blob.url,
+    );
+
+    // Best-effort consistency: concurrent uploads from separate serverless
+    // instances can lose one manifest entry (the blob itself stays stored).
+    manifest.books[filename] = entry;
+    await writeBlobManifest(manifest);
+    return toBookMeta(entry);
+  });
+}
+
 /** Remove a book (by id) from the shared library. Returns false if absent. */
 export async function removeBook(id: string): Promise<boolean> {
+  return isBlobStorage ? removeBookBlob(id) : removeBookDisk(id);
+}
+
+/** Disk-mode remove. */
+async function removeBookDisk(id: string): Promise<boolean> {
   return withLock(async () => {
     const manifest = await readManifest();
     const filename = findFilenameById(manifest, id);
@@ -193,6 +308,26 @@ export async function removeBook(id: string): Promise<boolean> {
     }
     delete manifest.books[filename];
     await writeManifest(manifest);
+    return true;
+  });
+}
+
+/** Blob-mode remove: deletes the blob, then updates the manifest. */
+async function removeBookBlob(id: string): Promise<boolean> {
+  return withLock(async () => {
+    const manifest = await readBlobManifest();
+    const filename = findFilenameById(manifest, id);
+    if (!filename) return false;
+
+    const entry = manifest.books[filename];
+    if (entry?.url) {
+      // Best-effort: an orphaned blob is harmless (unguessable URL, unused).
+      await del(entry.url).catch((err) =>
+        console.error("blob delete failed:", err),
+      );
+    }
+    delete manifest.books[filename];
+    await writeBlobManifest(manifest);
     return true;
   });
 }
@@ -234,6 +369,7 @@ async function buildEntry(
   bytes: ArrayBuffer | Uint8Array,
   size: number,
   mtimeMs: number,
+  url?: string,
 ): Promise<ManifestEntry> {
   const id = hashBytes(bytes);
   const { title, author } = await extractEpubMetadata(bytes, _filename);
@@ -244,6 +380,7 @@ async function buildEntry(
     format: "epub",
     size,
     addedAt: Math.round(mtimeMs),
+    ...(url ? { url } : {}),
     cacheKey: `${size}:${mtimeMs}`,
   };
 }
@@ -271,18 +408,22 @@ function validateEpub(name: string, bytes: ArrayBuffer | Uint8Array): void {
   }
 }
 
-/** Produce a safe, unique on-disk filename for an uploaded EPUB. */
-async function pickUniqueFilename(
+/**
+ * Produce a safe, unique on-disk/blob filename for an uploaded EPUB.
+ * `existing` holds filenames already in use (library dir in disk mode,
+ * manifest keys in blob mode).
+ */
+function pickUniqueFilename(
   id: string,
   originalName: string,
-): Promise<string> {
+  existing: Set<string>,
+): string {
   const base = sanitizeBaseName(originalName);
   // Prefix with a short slice of the content hash to guarantee uniqueness
   // while keeping the human-readable original name for admins browsing disk.
   const shortId = id.slice(3, 11);
   let candidate = `${shortId}__${base}`;
 
-  const existing = new Set(await readEpubFiles());
   if (!existing.has(candidate)) return candidate;
 
   const dot = base.lastIndexOf(".");
@@ -377,6 +518,38 @@ async function writeManifest(manifest: Manifest): Promise<void> {
     fs.writeFile(tmp, JSON.stringify(manifest, null, 2), "utf8"),
   );
   await withFileRetry(() => fs.rename(tmp, MANIFEST_PATH));
+}
+
+/** Blob pathname of the shared manifest inside the Blob store. */
+const BLOB_MANIFEST_PATH = "epubs/.manifest.json";
+
+/**
+ * Read the manifest blob. `head` resolves the blob's current URL (it changes
+ * on every rewrite); a missing/corrupt manifest means an empty library.
+ */
+async function readBlobManifest(): Promise<Manifest> {
+  try {
+    const meta = await head(BLOB_MANIFEST_PATH);
+    const res = await fetch(meta.url, { cache: "no-store" });
+    if (res.ok) {
+      const parsed = JSON.parse(await res.text()) as Partial<Manifest>;
+      if (parsed && parsed.version === 1 && parsed.books) {
+        return { version: 1, books: parsed.books };
+      }
+    }
+  } catch {
+    // Missing/corrupt manifest — start fresh.
+  }
+  return { version: 1, books: {} };
+}
+
+/** Write the manifest blob (single object, overwritten in place). */
+async function writeBlobManifest(manifest: Manifest): Promise<void> {
+  await put(BLOB_MANIFEST_PATH, JSON.stringify(manifest, null, 2), {
+    access: "public",
+    contentType: "application/json",
+    addRandomSuffix: false,
+  });
 }
 
 /**
