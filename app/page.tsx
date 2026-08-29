@@ -26,7 +26,7 @@ export default function Home() {
   const setCurrentBook = useReaderStore((s) => s.setCurrentBook);
   const setBooks = useReaderStore((s) => s.setBooks);
 
-  // Load the shared library from the server on first mount. The library is
+  // Load the shared library from the server on first mounst. The library is
   // server-authoritative (shared across all users), so we never preload a
   // sample book — it starts empty or with whatever has been uploaded.
   useEffect(() => {
