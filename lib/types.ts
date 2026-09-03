@@ -66,6 +66,7 @@ export interface SavedTranslation {
   source: string;
   result: string;
   example?: string;
+  phonetic?: string;
   targetLanguage: TargetLanguage;
   createdAt: number;
 }
@@ -109,4 +110,5 @@ export interface LlmRequest {
 export interface LlmResponse {
   result: string;
   example?: string;
+  phonetic?: string;
 }

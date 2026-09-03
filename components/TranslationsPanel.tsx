@@ -39,6 +39,11 @@ export function TranslationsPanel({ onOpen }: TranslationsPanelProps) {
             >
               <p className="text-sm font-medium leading-relaxed text-foreground">
                 {t.source}
+                {t.phonetic && (
+                  <span className="ml-2 text-xs font-normal text-muted">
+                    {t.phonetic}
+                  </span>
+                )}
               </p>
               <p className="mt-1 text-sm leading-relaxed text-muted">
                 {t.result}

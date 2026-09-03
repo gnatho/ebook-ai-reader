@@ -8,12 +8,14 @@ import {
   Loader2,
   Quote,
   Search,
+  Volume2,
   Wand2,
   X,
 } from "lucide-react";
 import { useReaderStore } from "@/lib/store/useReaderStore";
 import { useSettingsStore } from "@/lib/store/useSettingsStore";
 import { callLlm } from "@/lib/llm";
+import { speakWord } from "@/lib/tts";
 import { cn } from "@/lib/utils";
 import type { EpubViewerHandle } from "./EpubViewer";
 import type { LlmAction, SelectionContext, SelectionState } from "@/lib/types";
@@ -28,7 +30,14 @@ interface SelectionMenuProps {
 type Panel =
   | { kind: "idle" }
   | { kind: "loading"; action: LlmAction }
-  | { kind: "result"; action: LlmAction; result: string; example?: string; error?: string };
+  | {
+      kind: "result";
+      action: LlmAction;
+      result: string;
+      example?: string;
+      phonetic?: string;
+      error?: string;
+    };
 
 function normalizeSource(text: string, context?: SelectionContext): string {
   const trimmed = text.trim();
@@ -85,7 +94,13 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
         isWord: ctx?.isWord,
         targetLanguage,
       });
-      setPanel({ kind: "result", action, result: res.result, example: res.example });
+      setPanel({
+        kind: "result",
+        action,
+        result: res.result,
+        example: res.example,
+        phonetic: res.phonetic,
+      });
       if (action === "translate") {
         addTranslation({
           bookId,
@@ -93,6 +108,7 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
           source: normalizeSource(selection.text, selection.context),
           result: res.result,
           example: res.example,
+          phonetic: res.phonetic,
           targetLanguage,
         });
       }
@@ -262,6 +278,25 @@ export function SelectionMenu({ selection, bookId, viewerRef, onClose }: Selecti
               <p className="text-sm text-red-400">{panel.error}</p>
             ) : (
               <div className="space-y-2">
+                {(panel.action === "translate" || panel.action === "define") && (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-sm font-semibold text-foreground">
+                      {normalizeSource(selection.text, selection.context)}
+                    </span>
+                    {panel.phonetic && (
+                      <span className="text-xs text-muted">{panel.phonetic}</span>
+                    )}
+                    <button
+                      type="button"
+                      aria-label="Pronounce word"
+                      title="Pronounce"
+                      onClick={() => speakWord(selection.text.trim())}
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-surface-2 hover:text-foreground"
+                    >
+                      <Volume2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">
                   {panel.result}
                 </p>

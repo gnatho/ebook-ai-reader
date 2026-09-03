@@ -50,20 +50,20 @@ function buildPrompt(req: LlmRequest): { system: string; user: string } {
       return {
         system:
           "You are a precise English dictionary. Given a single word in context, return its most common part(s) of speech and concise definitions that fit how it is used in the provided context, plus one short example sentence using the word naturally.",
-        user: `Word: ${term}${context}\n\nReturn JSON {"result": "<word> — (part of speech) definition; definition", "example": "<example sentence using the word>"}`,
+        user: `Word: ${term}${context}\n\nReturn JSON {"result": "<word> — (part of speech) definition; definition", "phonetic": "<IPA phonetic transcription of the word, e.g. /wɜːrd/>", "example": "<example sentence using the word>"}`,
       };
     case "translate":
       if (req.targetLanguage === "en-zh") {
         return {
           system:
             "You are an English-Chinese translator and language tutor. Translate the selected word or phrase into Chinese, choosing the meaning that best fits the provided context. If the selected text is a single word, also state its part of speech as used in context. Then give one short example sentence in English together with its Chinese translation.",
-          user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<Chinese translation, with part of speech in parentheses if a single word>", "example": "<English sentence> — <中文翻译>"}`,
+          user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<Chinese translation, with part of speech in parentheses if a single word>", "phonetic": "<IPA phonetic transcription of the English word, e.g. /wɜːrd/; empty string if the selected text is a phrase>", "example": "<English sentence> — <中文翻译>"}`,
         };
       }
       return {
         system:
           "You are an English-English language tutor. Give a concise definition of the selected word or phrase that fits how it is used in the provided context, then one short example sentence using it naturally.",
-        user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<concise definition>", "example": "<example sentence using the term>"}`,
+        user: `Selected text (${typeLabel}): ${term}${context}\n\nReturn JSON {"result": "<concise definition>", "phonetic": "<IPA phonetic transcription of the English word, e.g. /wɜːrd/; empty string if the selected text is a phrase>", "example": "<example sentence using the term>"}`,
       };
     default: {
       const _exhaustive: never = req.action;
@@ -76,7 +76,11 @@ function buildPrompt(req: LlmRequest): { system: string; user: string } {
   }
 }
 
-function extractJson(content: string): { result: string; example?: string } {
+function extractJson(content: string): {
+  result: string;
+  example?: string;
+  phonetic?: string;
+} {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = fenced ? fenced[1] : content;
   const start = raw.indexOf("{");
@@ -86,6 +90,7 @@ function extractJson(content: string): { result: string; example?: string } {
     return {
       result: String(obj.result ?? obj.text ?? obj.translation ?? "").trim(),
       example: obj.example ? String(obj.example).trim() : undefined,
+      phonetic: obj.phonetic ? String(obj.phonetic).trim() : undefined,
     };
   }
   return { result: content.trim() };
