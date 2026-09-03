@@ -4,10 +4,10 @@ import type { LlmRequest, LlmResponse, LlmAction } from "@/lib/types";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
-const MODEL = "deepseek-v4-flash";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "google/gemini-2.5-flash-lite";
 
-interface DeepSeekMessage {
+interface ChatMessage {
   role: "system" | "user";
   content: string;
 }
@@ -92,10 +92,10 @@ function extractJson(content: string): { result: string; example?: string } {
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "DeepSeek API key is not configured." },
+      { error: "OpenRouter API key is not configured.", code: "missing_api_key" },
       { status: 500 }
     );
   }
@@ -104,33 +104,41 @@ export async function POST(request: Request) {
   try {
     body = (await request.json()) as LlmRequest;
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Invalid JSON body.", code: "invalid_request" },
+      { status: 400 }
+    );
   }
 
   if (!body?.text || !body?.action) {
     return NextResponse.json(
-      { error: "Missing 'text' or 'action'." },
+      { error: "Missing 'text' or 'action'.", code: "invalid_request" },
       { status: 400 }
     );
   }
 
   const actions: LlmAction[] = ["simplify", "translate", "define"];
   if (!actions.includes(body.action)) {
-    return NextResponse.json({ error: "Unknown action." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Unknown action.", code: "invalid_request" },
+      { status: 400 }
+    );
   }
 
   const { system, user } = buildPrompt(body);
-  const messages: DeepSeekMessage[] = [
+  const messages: ChatMessage[] = [
     { role: "system", content: system },
     { role: "user", content: user },
   ];
 
   try {
-    const res = await fetch(DEEPSEEK_URL, {
+    const res = await fetch(OPENROUTER_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${apiKey}`,
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "ebook-ai-reader",
       },
       body: JSON.stringify({
         model: MODEL,
@@ -144,15 +152,22 @@ export async function POST(request: Request) {
 
     if (!res.ok) {
       const detail = await res.text();
+      let code: string | number | null = null;
+      try {
+        const parsed = JSON.parse(detail);
+        code = parsed?.error?.code ?? parsed?.error?.metadata?.raw ?? null;
+      } catch {
+        // Body was not JSON; leave code null.
+      }
       return NextResponse.json(
-        { error: `DeepSeek error: ${res.status}`, detail },
+        { error: `OpenRouter error: ${res.status}`, code, detail },
         { status: 502 }
       );
     }
 
     const data = await res.json();
-    const content: string =
-      data?.choices?.[0]?.message?.content ?? "";
+    const choice = data?.choices?.[0];
+    const content: string = choice?.message?.content ?? "";
 
     let parsed: LlmResponse;
     try {
@@ -162,16 +177,30 @@ export async function POST(request: Request) {
     }
 
     if (!parsed.result) {
+      const reasoningTokens =
+        data?.usage?.completion_tokens_detail?.reasoning_tokens ?? null;
+      const completionTokens = data?.usage?.completion_tokens ?? null;
       return NextResponse.json(
-        { error: "Empty response from model." },
+        {
+          error: "Empty response from model.",
+          code: "empty_response",
+          detail: {
+            finishReason: choice?.finish_reason ?? null,
+            nativeFinishReason: choice?.native_finish_reason ?? null,
+            reasoningTokens,
+            completionTokens,
+            contentLength: content.length,
+          },
+        },
         { status: 502 }
       );
     }
 
     return NextResponse.json(parsed);
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code ?? "network_error";
     return NextResponse.json(
-      { error: "Failed to reach DeepSeek.", detail: String(err) },
+      { error: "Failed to reach OpenRouter.", code, detail: String(err) },
       { status: 502 }
     );
   }
